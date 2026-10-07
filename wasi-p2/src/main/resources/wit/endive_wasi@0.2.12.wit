@@ -1,0 +1,5 @@
+package endive:wasi@0.2.12;
+
+world imports {
+  include wasi:clocks/imports@0.2.12;
+}
