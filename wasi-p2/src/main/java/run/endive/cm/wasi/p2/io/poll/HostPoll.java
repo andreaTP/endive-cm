@@ -1,11 +1,11 @@
 package run.endive.cm.wasi.p2.io.poll;
 
-import java.util.ArrayList;
-import java.util.List;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.Promise;
+import java.util.ArrayList;
+import java.util.List;
 import run.endive.cm.wasi.p2.bindings.wasi.io.poll.Host;
 import run.endive.cm.wasi.p2.bindings.wasi.io.poll.Pollable;
 import run.endive.runtime.TrapException;
