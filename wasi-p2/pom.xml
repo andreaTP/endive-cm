@@ -26,6 +26,16 @@
       <artifactId>junit-jupiter-api</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>run.endive.cm</groupId>
+      <artifactId>parser</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>run.endive.cm</groupId>
+      <artifactId>wasm-tools</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
