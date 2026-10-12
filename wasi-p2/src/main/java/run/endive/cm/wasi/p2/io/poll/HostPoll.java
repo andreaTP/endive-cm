@@ -2,18 +2,17 @@ package run.endive.cm.wasi.p2.io.poll;
 
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.GenericFutureListener;
-import io.netty.util.concurrent.Promise;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 import run.endive.cm.wasi.p2.bindings.wasi.io.poll.Host;
 import run.endive.cm.wasi.p2.bindings.wasi.io.poll.Pollable;
+import run.endive.cm.wasi.p2.io.Blocking;
 import run.endive.runtime.TrapException;
-import run.endive.wasm.WasmEngineException;
 
 /**
- * The host side of {@code wasi:io/poll}, where each pollable is ready once the Netty future it
- * wraps completes.
+ * The host side of {@code wasi:io/poll}, where each pollable is ready while the Netty future it
+ * currently stands for is complete.
  *
  * <p>Polling and blocking wait on the calling thread, so neither may run on the event loop that
  * completes the futures.
@@ -33,7 +32,17 @@ public class HostPoll implements Host {
      * leaves the future running, so the future may be shared with whatever else waits on it.
      */
     public Pollable pollable(Future<?> future) {
-        return new FuturePollable(future, false);
+        return new FuturePollable(() -> future, false);
+    }
+
+    /**
+     * Creates a pollable that is ready while the future {@code readiness} currently supplies is
+     * complete. It is asked again each time the pollable is checked, so a source that stops being
+     * ready, such as a stream whose buffered input was read, supplies a new future. Dropping the
+     * pollable leaves every future running.
+     */
+    public Pollable pollable(Supplier<? extends Future<?>> readiness) {
+        return new FuturePollable(readiness, false);
     }
 
     /**
@@ -41,7 +50,7 @@ public class HostPoll implements Host {
      * drops it. Suits a future that exists only to serve this pollable, such as a timer.
      */
     public Pollable ownedPollable(Future<?> future) {
-        return new FuturePollable(future, true);
+        return new FuturePollable(() -> future, true);
     }
 
     /**
@@ -51,7 +60,7 @@ public class HostPoll implements Host {
      */
     @Override
     public List<Long> poll(List<Pollable> pollables) {
-        checkBlocking();
+        Blocking.check(eventLoopExecutor);
         if (pollables.isEmpty()) {
             throw new TrapException("poll requires at least one pollable");
         }
@@ -60,9 +69,7 @@ public class HostPoll implements Host {
             futures.add(futureOf(pollable));
         }
 
-        if (futures.stream().noneMatch(Future::isDone)) {
-            await(futures);
-        }
+        Blocking.awaitAny(eventLoopExecutor, futures);
 
         List<Long> ready = new ArrayList<>();
         for (int i = 0; i < futures.size(); i++) {
@@ -73,61 +80,38 @@ public class HostPoll implements Host {
         return ready;
     }
 
-    private void await(List<Future<?>> futures) {
-        Promise<Void> anyDone = eventLoopExecutor.newPromise();
-        GenericFutureListener<Future<Object>> listener = done -> anyDone.trySuccess(null);
-        for (Future<?> future : futures) {
-            future.addListener(listener);
-        }
-        try {
-            anyDone.awaitUninterruptibly();
-        } finally {
-            for (Future<?> future : futures) {
-                future.removeListener(listener);
-            }
-        }
-    }
-
     private static Future<?> futureOf(Pollable pollable) {
         if (!(pollable instanceof FuturePollable)) {
             throw new IllegalArgumentException(
                     "pollable " + pollable + " was not created by " + HostPoll.class.getName());
         }
-        return ((FuturePollable) pollable).future;
-    }
-
-    private void checkBlocking() {
-        if (eventLoopExecutor.inEventLoop()) {
-            throw new WasmEngineException(
-                    "Blocking host operations cannot be executed from within the EventLoop");
-        }
+        return ((FuturePollable) pollable).readiness.get();
     }
 
     private final class FuturePollable implements Pollable {
 
-        private final Future<?> future;
+        private final Supplier<? extends Future<?>> readiness;
         private final boolean owned;
 
-        private FuturePollable(Future<?> future, boolean owned) {
-            this.future = future;
+        private FuturePollable(Supplier<? extends Future<?>> readiness, boolean owned) {
+            this.readiness = readiness;
             this.owned = owned;
         }
 
         @Override
         public Boolean ready() {
-            return future.isDone();
+            return readiness.get().isDone();
         }
 
         @Override
         public void block() {
-            checkBlocking();
-            future.awaitUninterruptibly();
+            Blocking.await(eventLoopExecutor, readiness.get());
         }
 
         @Override
         public void drop() {
             if (owned) {
-                future.cancel(false);
+                readiness.get().cancel(false);
             }
         }
     }

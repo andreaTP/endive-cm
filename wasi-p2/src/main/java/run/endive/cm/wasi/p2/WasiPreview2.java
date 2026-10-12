@@ -1,10 +1,10 @@
 package run.endive.cm.wasi.p2;
 
+import io.netty.util.concurrent.DefaultEventExecutor;
+import io.netty.util.concurrent.EventExecutor;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
-import io.netty.util.concurrent.DefaultEventExecutor;
-import io.netty.util.concurrent.EventExecutor;
 import run.endive.cm.runtime.ComponentStore;
 import run.endive.cm.types.WasmComponent;
 import run.endive.cm.wasi.p2.bindings.ImportsWorld;

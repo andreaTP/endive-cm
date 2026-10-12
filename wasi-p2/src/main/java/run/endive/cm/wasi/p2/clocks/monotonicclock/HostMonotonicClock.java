@@ -1,9 +1,9 @@
 package run.endive.cm.wasi.p2.clocks.monotonicclock;
 
-import java.math.BigInteger;
-import java.util.concurrent.TimeUnit;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Ticker;
+import java.math.BigInteger;
+import java.util.concurrent.TimeUnit;
 import run.endive.cm.wasi.p2.bindings.wasi.clocks.monotonicclock.Host;
 import run.endive.cm.wasi.p2.bindings.wasi.io.poll.Pollable;
 import run.endive.cm.wasi.p2.io.poll.HostPoll;

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -139,6 +140,55 @@ class HostPollTest {
         host.pollable(later).block();
 
         assertTrue(later.isDone());
+    }
+
+    /** A source that stops being ready supplies a new future, and the pollable follows it. */
+    @Test
+    void aSuppliedPollableFollowsTheCurrentFuture() {
+        AtomicReference<Promise<Void>> current =
+                new AtomicReference<>(executor.<Void>newPromise().setSuccess(null));
+        Pollable pollable = host.pollable(current::get);
+
+        assertTrue(pollable.ready());
+        current.set(executor.newPromise());
+        assertFalse(pollable.ready());
+    }
+
+    @Test
+    void pollWaitsOnTheFutureSuppliedWhenItIsCalled() {
+        AtomicReference<Promise<Void>> current =
+                new AtomicReference<>(executor.<Void>newPromise().setSuccess(null));
+        Pollable pollable = host.pollable(current::get);
+        Promise<Void> later = executor.newPromise();
+        current.set(later);
+        executor.schedule(() -> later.setSuccess(null), 20, TimeUnit.MILLISECONDS);
+
+        assertEquals(List.of(0L), host.poll(List.of(pollable)));
+        assertTrue(later.isDone());
+    }
+
+    @Test
+    void blockWaitsOnTheFutureSuppliedWhenItIsCalled() {
+        AtomicReference<Promise<Void>> current =
+                new AtomicReference<>(executor.<Void>newPromise().setSuccess(null));
+        Pollable pollable = host.pollable(current::get);
+        Promise<Void> later = executor.newPromise();
+        current.set(later);
+        executor.schedule(() -> later.setSuccess(null), 20, TimeUnit.MILLISECONDS);
+
+        pollable.block();
+
+        assertTrue(later.isDone());
+    }
+
+    /** A supplied future belongs to its source, which other pollables may still wait on. */
+    @Test
+    void droppingASuppliedPollableLeavesItsFutureRunning() {
+        Promise<Void> shared = executor.newPromise();
+
+        host.pollable(() -> shared).drop();
+
+        assertFalse(shared.isDone());
     }
 
     @Test
