@@ -80,7 +80,7 @@ public class BufferedHostInputStream extends HostInputStream {
         readiness.complete(null);
     }
 
-    /** Fails the stream with {@code cause}, reported to the guest ahead of anything buffered. */
+    /** Fails the stream with {@code cause}, reported to the guest once it has read everything buffered. */
     public void fail(Throwable cause) {
         end.compareAndSet(null, new End(cause));
         readiness.complete(null);
@@ -95,13 +95,11 @@ public class BufferedHostInputStream extends HostInputStream {
     @Override
     protected byte[] readAvailable(int max) {
         End ended = end.get();
-        if (ended != null && ended.failure != null) {
-            end.set(End.CLOSED);
-            chunks.clear();
-            head = null;
-            throw StreamErrors.failed(ended.failure);
-        }
         if (!hasBytes()) {
+            if (ended != null && ended.failure != null) {
+                end.set(End.CLOSED);
+                throw StreamErrors.failed(ended.failure);
+            }
             if (ended != null) {
                 throw StreamErrors.closed();
             }

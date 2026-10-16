@@ -89,7 +89,6 @@ class BufferedHostInputStreamTest {
     @Test
     void aFailureIsReportedOnceAndThenTheStreamIsClosed() {
         var stream = new BufferedHostInputStream(poll);
-        stream.offer(bytes("lost"));
         stream.fail(new IOException("reset"));
 
         StreamErrorException e =
@@ -98,6 +97,21 @@ class BufferedHostInputStreamTest {
                 assertInstanceOf(StreamError.LastOperationFailed.class, e.error());
         assertEquals("java.io.IOException: reset", failed.value().toDebugString());
         assertClosed(() -> stream.read(len(10)));
+    }
+
+    /** Bytes the source produced before failing still reach the guest, ahead of the failure. */
+    @Test
+    void whatWasBufferedIsReadBeforeTheFailure() {
+        var stream = new BufferedHostInputStream(poll);
+        Pollable pollable = stream.subscribe();
+        stream.offer(bytes("kept"));
+        stream.fail(new IOException("reset"));
+
+        assertArrayEquals(bytes("kept"), stream.read(len(10)));
+        assertTrue(pollable.ready());
+        StreamErrorException e =
+                assertThrows(StreamErrorException.class, () -> stream.read(len(10)));
+        assertInstanceOf(StreamError.LastOperationFailed.class, e.error());
     }
 
     @Test
