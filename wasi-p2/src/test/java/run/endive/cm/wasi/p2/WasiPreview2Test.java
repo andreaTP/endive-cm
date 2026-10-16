@@ -58,4 +58,13 @@ class WasiPreview2Test {
             assertEquals(new Datetime(BigInteger.valueOf(42), 0L), wasi.wallClock().now());
         }
     }
+
+    @Test
+    void aWallClockNeedsAResolution() {
+        Clock fixed = Clock.fixed(Instant.ofEpochSecond(42), ZoneOffset.UTC);
+
+        assertThrows(
+                NullPointerException.class,
+                () -> WasiPreview2.builder().withWallClock(fixed, null));
+    }
 }

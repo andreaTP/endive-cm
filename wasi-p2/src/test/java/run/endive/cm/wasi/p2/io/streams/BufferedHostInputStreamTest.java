@@ -185,6 +185,29 @@ class BufferedHostInputStreamTest {
         assertEquals(1, demand.get());
     }
 
+    /** Dropping discards what was unread and resumes a paused source, which then sees it should stop. */
+    @Test
+    void droppingDiscardsTheBufferAndStopsTheSource() {
+        AtomicInteger demand = new AtomicInteger();
+        var stream = new BufferedHostInputStream(poll, 4, demand::incrementAndGet);
+        assertFalse(stream.offer(new byte[4]));
+
+        stream.drop();
+
+        assertEquals(1, demand.get());
+        assertTrue(stream.isClosed());
+        assertFalse(stream.offer(new byte[1]));
+    }
+
+    @Test
+    void aStreamIsClosedOnceTheSourceEndsIt() {
+        var stream = new BufferedHostInputStream(poll);
+
+        assertFalse(stream.isClosed());
+        stream.close();
+        assertTrue(stream.isClosed());
+    }
+
     /**
      * A source on another thread that pauses whenever asked and waits for demand, against a guest
      * that blocks for each read. A lost resume or a lost wakeup would leave both waiting.

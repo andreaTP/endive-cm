@@ -106,6 +106,24 @@ public class BufferedHostOutputStream extends HostOutputStream {
         readiness.complete(null);
     }
 
+    /**
+     * Whether the guest can no longer write, after {@link #close}, {@link #fail}, or the guest
+     * dropping the stream. Bytes it wrote before may still be drained.
+     */
+    public boolean isClosed() {
+        return end.get() != null;
+    }
+
+    /**
+     * Closes the stream once the guest drops it, and tells the consumer through {@code onWritten}
+     * so it can drain what is left and see the stream is closed.
+     */
+    @Override
+    public void drop() {
+        close();
+        onWritten.run();
+    }
+
     @Override
     public CompletableFuture<?> readiness() {
         return readiness;

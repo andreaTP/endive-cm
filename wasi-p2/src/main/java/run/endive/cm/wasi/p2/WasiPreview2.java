@@ -114,8 +114,8 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
          * @param resolution the time one tick of {@code clock} stands for
          */
         public Builder withWallClock(Clock clock, Duration resolution) {
-            this.clock = clock;
-            this.clockResolution = resolution;
+            this.clock = Objects.requireNonNull(clock, "clock");
+            this.clockResolution = Objects.requireNonNull(resolution, "resolution");
             return this;
         }
 

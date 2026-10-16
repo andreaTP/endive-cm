@@ -242,6 +242,21 @@ class BufferedHostOutputStreamTest {
         assertEquals(2, notified[0]);
     }
 
+    /** The consumer learns of the drop, and can still drain what the guest wrote before it. */
+    @Test
+    void droppingClosesTheStreamAndLeavesItsBytesToDrain() {
+        int[] notified = new int[1];
+        var stream = new BufferedHostOutputStream(poll, 8, () -> notified[0]++);
+        stream.checkWrite();
+        stream.write(bytes("abc"));
+
+        stream.drop();
+
+        assertEquals(2, notified[0]);
+        assertTrue(stream.isClosed());
+        assertArrayEquals(bytes("abc"), stream.drain());
+    }
+
     @Test
     void spliceMovesWhatIsAvailable() {
         var input = new BufferedHostInputStream(poll);

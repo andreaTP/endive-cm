@@ -49,10 +49,11 @@ public class BufferedHostInputStream extends HostInputStream {
     }
 
     /**
-     * Buffers {@code bytes} for the guest to read. Offering after {@link #close} or {@link #fail}
-     * has no effect.
+     * Buffers {@code bytes} for the guest to read. The stream keeps the array without copying it, so
+     * the source must not change it afterwards. Offering once the stream is closed has no effect.
      *
      * @return whether the source may keep producing, which is {@code false} once the buffer is full
+     *     or the stream is closed
      */
     public boolean offer(byte[] bytes) {
         if (end.get() != null) {
@@ -84,6 +85,29 @@ public class BufferedHostInputStream extends HostInputStream {
     public void fail(Throwable cause) {
         end.compareAndSet(null, new End(cause));
         readiness.complete(null);
+    }
+
+    /**
+     * Whether the stream takes no more bytes, after {@link #close}, {@link #fail}, or the guest
+     * dropping it. A source told to pause checks this to tell whether it should stop instead.
+     */
+    public boolean isClosed() {
+        return end.get() != null;
+    }
+
+    /**
+     * Closes the stream once the guest drops it and discards what it had not read. A paused source
+     * is resumed, so it can see the stream is closed.
+     */
+    @Override
+    public void drop() {
+        end.set(End.CLOSED);
+        chunks.clear();
+        head = null;
+        readiness.complete(null);
+        if ((state.getAndSet(0) & PAUSED) != 0) {
+            onDemand.run();
+        }
     }
 
     @Override
