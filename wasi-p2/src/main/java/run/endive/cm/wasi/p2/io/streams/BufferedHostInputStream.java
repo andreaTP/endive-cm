@@ -1,9 +1,7 @@
 package run.endive.cm.wasi.p2.io.streams;
 
-import io.netty.util.concurrent.EventExecutor;
-import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.Promise;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -25,14 +23,13 @@ public class BufferedHostInputStream extends HostInputStream {
     /** The bit of {@link #state} that records the source was asked to pause. */
     private static final long PAUSED = 1L << 62;
 
-    private final EventExecutor eventLoopExecutor;
     private final int capacity;
     private final Runnable onDemand;
 
     private final Queue<byte[]> chunks = new ConcurrentLinkedQueue<>();
     private final AtomicLong state = new AtomicLong();
     private final AtomicReference<End> end = new AtomicReference<>();
-    private volatile Promise<Void> readiness;
+    private volatile CompletableFuture<Void> readiness = new CompletableFuture<>();
     private byte[] head;
     private int headOffset;
 
@@ -40,18 +37,15 @@ public class BufferedHostInputStream extends HostInputStream {
      * @param capacity how many bytes may be buffered before the source is asked to pause
      * @param onDemand run once a paused source should resume
      */
-    public BufferedHostInputStream(
-            EventExecutor eventLoopExecutor, HostPoll poll, int capacity, Runnable onDemand) {
-        super(eventLoopExecutor, poll);
-        this.eventLoopExecutor = eventLoopExecutor;
+    public BufferedHostInputStream(HostPoll poll, int capacity, Runnable onDemand) {
+        super(poll);
         this.capacity = capacity;
         this.onDemand = onDemand == null ? NO_DEMAND : onDemand;
-        this.readiness = eventLoopExecutor.newPromise();
     }
 
     /** A stream whose source never pauses, such as one that offers everything up front. */
-    public BufferedHostInputStream(EventExecutor eventLoopExecutor, HostPoll poll) {
-        this(eventLoopExecutor, poll, Integer.MAX_VALUE, null);
+    public BufferedHostInputStream(HostPoll poll) {
+        this(poll, Integer.MAX_VALUE, null);
     }
 
     /**
@@ -75,7 +69,7 @@ public class BufferedHostInputStream extends HostInputStream {
             next = buffered >= capacity ? buffered | PAUSED : buffered;
         } while (!state.compareAndSet(current, next));
         if (bytes.length > 0) {
-            readiness.trySuccess(null);
+            readiness.complete(null);
         }
         return (next & PAUSED) == 0;
     }
@@ -83,17 +77,17 @@ public class BufferedHostInputStream extends HostInputStream {
     /** Ends the stream, which the guest sees once it has read everything buffered. */
     public void close() {
         end.compareAndSet(null, End.CLOSED);
-        readiness.trySuccess(null);
+        readiness.complete(null);
     }
 
     /** Fails the stream with {@code cause}, reported to the guest ahead of anything buffered. */
     public void fail(Throwable cause) {
         end.compareAndSet(null, new End(cause));
-        readiness.trySuccess(null);
+        readiness.complete(null);
     }
 
     @Override
-    public Future<?> readiness() {
+    public CompletableFuture<?> readiness() {
         return readiness;
     }
 
@@ -167,17 +161,17 @@ public class BufferedHostInputStream extends HostInputStream {
 
     /**
      * Makes {@link #readiness} pending once the buffer is empty. A source that offers or ends the
-     * stream meanwhile completes either the old promise or the new one, which the check after
+     * stream meanwhile completes either the old future or the new one, which the check after
      * publishing it catches.
      */
     private void awaitBytes() {
         if (!readiness.isDone()) {
             return;
         }
-        Promise<Void> pending = eventLoopExecutor.newPromise();
+        CompletableFuture<Void> pending = new CompletableFuture<>();
         readiness = pending;
         if (!chunks.isEmpty() || end.get() != null) {
-            pending.trySuccess(null);
+            pending.complete(null);
         }
     }
 

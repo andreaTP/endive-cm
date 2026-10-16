@@ -1,10 +1,8 @@
 package run.endive.cm.wasi.p2.io.streams;
 
-import io.netty.util.concurrent.EventExecutor;
-import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.Promise;
 import java.io.ByteArrayOutputStream;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -25,7 +23,6 @@ public class BufferedHostOutputStream extends HostOutputStream {
 
     private static final Runnable NOTHING_WRITTEN = () -> {};
 
-    private final EventExecutor eventLoopExecutor;
     private final int capacity;
     private final Runnable onWritten;
 
@@ -37,19 +34,16 @@ public class BufferedHostOutputStream extends HostOutputStream {
     private volatile long written;
 
     private volatile long flushedThrough;
-    private volatile Promise<Void> readiness;
+    private volatile CompletableFuture<Void> readiness = CompletableFuture.completedFuture(null);
 
     /**
      * @param capacity how many bytes the guest may buffer before it has to wait for the consumer
      * @param onWritten run after the guest writes or flushes
      */
-    public BufferedHostOutputStream(
-            EventExecutor eventLoopExecutor, HostPoll poll, int capacity, Runnable onWritten) {
-        super(eventLoopExecutor, poll);
-        this.eventLoopExecutor = eventLoopExecutor;
+    public BufferedHostOutputStream(HostPoll poll, int capacity, Runnable onWritten) {
+        super(poll);
         this.capacity = capacity;
         this.onWritten = onWritten == null ? NOTHING_WRITTEN : onWritten;
-        this.readiness = eventLoopExecutor.<Void>newPromise().setSuccess(null);
     }
 
     /**
@@ -73,7 +67,7 @@ public class BufferedHostOutputStream extends HostOutputStream {
         }
         drained.addAndGet(bytes.length);
         if (isReady()) {
-            readiness.trySuccess(null);
+            readiness.complete(null);
         }
         return bytes;
     }
@@ -81,17 +75,17 @@ public class BufferedHostOutputStream extends HostOutputStream {
     /** Ends the stream, which the guest sees on its next operation. */
     public void close() {
         end.compareAndSet(null, End.CLOSED);
-        readiness.trySuccess(null);
+        readiness.complete(null);
     }
 
     /** Fails the stream with {@code cause}, which the guest sees on its next operation. */
     public void fail(Throwable cause) {
         end.compareAndSet(null, new End(cause));
-        readiness.trySuccess(null);
+        readiness.complete(null);
     }
 
     @Override
-    public Future<?> readiness() {
+    public CompletableFuture<?> readiness() {
         return readiness;
     }
 
@@ -149,17 +143,17 @@ public class BufferedHostOutputStream extends HostOutputStream {
 
     /**
      * Makes {@link #readiness} pending. A consumer that drains or ends the stream meanwhile
-     * completes either the old promise or the new one, which the check after publishing it
+     * completes either the old future or the new one, which the check after publishing it
      * catches.
      */
     private void notReady() {
         if (!readiness.isDone()) {
             return;
         }
-        Promise<Void> pending = eventLoopExecutor.newPromise();
+        CompletableFuture<Void> pending = new CompletableFuture<>();
         readiness = pending;
         if (isReady()) {
-            pending.trySuccess(null);
+            pending.complete(null);
         }
     }
 

@@ -8,9 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.netty.util.concurrent.DefaultEventExecutor;
-import io.netty.util.concurrent.EventExecutor;
-import io.netty.util.concurrent.ScheduledFuture;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -20,6 +17,9 @@ import java.util.Arrays;
 import java.util.Random;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
@@ -35,23 +35,23 @@ class BufferedHostOutputStreamTest {
 
     private static final int RACE_ROUNDS = 20_000;
 
-    private EventExecutor executor;
+    private ScheduledExecutorService scheduler;
     private HostPoll poll;
 
     @BeforeEach
-    void startExecutor() {
-        executor = new DefaultEventExecutor();
-        poll = new HostPoll(executor);
+    void startScheduler() {
+        scheduler = Executors.newSingleThreadScheduledExecutor();
+        poll = new HostPoll();
     }
 
     @AfterEach
-    void stopExecutor() {
-        executor.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+    void stopScheduler() {
+        scheduler.shutdownNow();
     }
 
     @Test
     void checkWritePermitsWhatTheBufferHasRoomFor() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
 
         assertEquals(len(8), stream.checkWrite());
         stream.write(bytes("abc"));
@@ -61,7 +61,7 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void writingMoreThanPermittedTraps() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         stream.checkWrite();
 
         assertThrows(TrapException.class, () -> stream.write(new byte[9]));
@@ -70,7 +70,7 @@ class BufferedHostOutputStreamTest {
     /** Each write spends the permit, so two writes cannot both use all of it. */
     @Test
     void thePermitIsSpentByEachWrite() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         stream.checkWrite();
         stream.write(new byte[6]);
 
@@ -79,7 +79,7 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void writingWithoutCheckingFirstTraps() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
 
         assertThrows(TrapException.class, () -> stream.write(new byte[1]));
     }
@@ -87,7 +87,7 @@ class BufferedHostOutputStreamTest {
     /** A flush withholds writes until the consumer has taken everything written before it. */
     @Test
     void aFlushHoldsWritesUntilTheConsumerTakesThem() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         Pollable pollable = stream.subscribe();
         stream.checkWrite();
         stream.write(bytes("flushed"));
@@ -103,7 +103,7 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void aFlushWithNothingWrittenCompletesAtOnce() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
 
         stream.flush();
 
@@ -112,7 +112,7 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void aFullBufferIsNotReady() {
-        var stream = new BufferedHostOutputStream(executor, poll, 4, null);
+        var stream = new BufferedHostOutputStream(poll, 4, null);
         Pollable pollable = stream.subscribe();
         stream.checkWrite();
 
@@ -127,7 +127,7 @@ class BufferedHostOutputStreamTest {
     @Test
     void blockingWriteAndFlushWaitsForTheConsumer() {
         ByteArrayOutputStream consumed = new ByteArrayOutputStream();
-        var stream = new BufferedHostOutputStream(executor, poll, 1024, null);
+        var stream = new BufferedHostOutputStream(poll, 1024, null);
         ScheduledFuture<?> consumer = drainEvery(stream, consumed);
         byte[] contents = new byte[3000];
         for (int i = 0; i < contents.length; i++) {
@@ -142,14 +142,14 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void blockingWriteAndFlushOfMoreThan4096BytesTraps() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8192, null);
+        var stream = new BufferedHostOutputStream(poll, 8192, null);
 
         assertThrows(TrapException.class, () -> stream.blockingWriteAndFlush(new byte[4097]));
     }
 
     @Test
     void writeZeroesWritesThatManyZeroes() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         stream.checkWrite();
 
         stream.writeZeroes(len(3));
@@ -159,7 +159,7 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void writingMoreZeroesThanPermittedTraps() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         stream.checkWrite();
 
         assertThrows(TrapException.class, () -> stream.writeZeroes(BigInteger.ONE.shiftLeft(40)));
@@ -168,7 +168,7 @@ class BufferedHostOutputStreamTest {
     @Test
     void blockingWriteZeroesAndFlushWaitsForTheConsumer() {
         ByteArrayOutputStream consumed = new ByteArrayOutputStream();
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         ScheduledFuture<?> consumer = drainEvery(stream, consumed);
 
         stream.blockingWriteZeroesAndFlush(len(20));
@@ -180,7 +180,7 @@ class BufferedHostOutputStreamTest {
     /** A failure is reported once, and the stream is closed from then on. */
     @Test
     void aFailureIsReportedOnceAndThenTheStreamIsClosed() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         Pollable pollable = stream.subscribe();
         stream.fail(new IOException("broken pipe"));
 
@@ -195,7 +195,7 @@ class BufferedHostOutputStreamTest {
     /** A write permitted before the stream closed fails rather than writing anything. */
     @Test
     void aWritePermittedBeforeClosingFailsWithClosed() {
-        var stream = new BufferedHostOutputStream(executor, poll, 8, null);
+        var stream = new BufferedHostOutputStream(poll, 8, null);
         stream.checkWrite();
         stream.close();
 
@@ -206,7 +206,7 @@ class BufferedHostOutputStreamTest {
     @Test
     void theConsumerLearnsOfWritesAndFlushes() {
         int[] notified = new int[1];
-        var stream = new BufferedHostOutputStream(executor, poll, 8, () -> notified[0]++);
+        var stream = new BufferedHostOutputStream(poll, 8, () -> notified[0]++);
         stream.checkWrite();
 
         stream.write(bytes("a"));
@@ -217,9 +217,9 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void spliceMovesWhatIsAvailable() {
-        var input = new BufferedHostInputStream(executor, poll);
+        var input = new BufferedHostInputStream(poll);
         input.offer(bytes("spliced!"));
-        var output = new BufferedHostOutputStream(executor, poll, 4, null);
+        var output = new BufferedHostOutputStream(poll, 4, null);
 
         assertEquals(len(4), output.splice(input, len(10)));
         assertArrayEquals(bytes("spli"), output.drain());
@@ -228,9 +228,9 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void spliceMovesNothingWhileTheOutputIsFull() {
-        var input = new BufferedHostInputStream(executor, poll);
+        var input = new BufferedHostInputStream(poll);
         input.offer(bytes("data"));
-        var output = new BufferedHostOutputStream(executor, poll, 2, null);
+        var output = new BufferedHostOutputStream(poll, 2, null);
         output.checkWrite();
         output.write(new byte[2]);
 
@@ -240,9 +240,9 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void blockingSpliceWaitsForInput() {
-        var input = new BufferedHostInputStream(executor, poll);
-        var output = new BufferedHostOutputStream(executor, poll, 16, null);
-        executor.schedule(() -> input.offer(bytes("later")), 20, TimeUnit.MILLISECONDS);
+        var input = new BufferedHostInputStream(poll);
+        var output = new BufferedHostOutputStream(poll, 16, null);
+        scheduler.schedule(() -> input.offer(bytes("later")), 20, TimeUnit.MILLISECONDS);
 
         assertEquals(len(5), output.blockingSplice(input, len(10)));
         assertArrayEquals(bytes("later"), output.drain());
@@ -250,9 +250,9 @@ class BufferedHostOutputStreamTest {
 
     @Test
     void spliceReportsTheInputClosing() {
-        var input = new BufferedHostInputStream(executor, poll);
+        var input = new BufferedHostInputStream(poll);
         input.close();
-        var output = new BufferedHostOutputStream(executor, poll, 16, null);
+        var output = new BufferedHostOutputStream(poll, 16, null);
 
         assertClosed(() -> output.splice(input, len(10)));
     }
@@ -266,7 +266,7 @@ class BufferedHostOutputStreamTest {
     void aFlushCoversEveryWriteBeforeItDespiteConcurrentDrains() {
         byte[] expected = new byte[200_000];
         new Random(1).nextBytes(expected);
-        var stream = new BufferedHostOutputStream(executor, poll, 64, null);
+        var stream = new BufferedHostOutputStream(poll, 64, null);
         AtomicBoolean done = new AtomicBoolean();
         ByteArrayOutputStream consumed = new ByteArrayOutputStream();
         Thread consumer =
@@ -320,7 +320,7 @@ class BufferedHostOutputStreamTest {
                 () -> {
                     closer.start();
                     for (int i = 0; i < RACE_ROUNDS; i++) {
-                        var stream = new BufferedHostOutputStream(executor, poll, 4, null);
+                        var stream = new BufferedHostOutputStream(poll, 4, null);
                         stream.checkWrite();
                         round[0] = stream;
                         await(start);
@@ -336,10 +336,10 @@ class BufferedHostOutputStreamTest {
                 });
     }
 
-    /** Drains {@code stream} into {@code consumed} every few milliseconds on the event loop. */
+    /** Drains {@code stream} into {@code consumed} every few milliseconds on the scheduler. */
     private ScheduledFuture<?> drainEvery(
             BufferedHostOutputStream stream, ByteArrayOutputStream consumed) {
-        return executor.scheduleAtFixedRate(
+        return scheduler.scheduleAtFixedRate(
                 () -> consumed.writeBytes(stream.drain()), 5, 5, TimeUnit.MILLISECONDS);
     }
 
