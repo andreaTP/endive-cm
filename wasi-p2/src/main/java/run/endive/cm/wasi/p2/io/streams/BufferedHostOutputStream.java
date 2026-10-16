@@ -9,13 +9,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import run.endive.cm.wasi.p2.io.poll.HostPoll;
 
 /**
- * An output stream holding what the guest writes until a consumer takes it. The consumer may run on
- * any thread, such as a worker writing to a blocking Java stream. Neither side ever waits on the
+ * An output stream holding what the guest writes until a consumer delivers it. The consumer may run
+ * on any thread, such as a worker writing to a blocking Java stream. Neither side ever waits on the
  * other.
  *
- * <p>The guest may buffer up to {@code capacity} bytes. A flush completes once the consumer has
- * taken everything written before it, and the guest may not write in the meantime. The consumer
- * learns there is something to take through {@code onWritten}.
+ * <p>The consumer learns there is something to take through {@code onWritten}, takes it with
+ * {@link #drain}, and calls {@link #markDelivered} once those bytes have reached their destination.
+ * The guest may have up to {@code capacity} bytes not yet delivered. A flush completes once
+ * everything written before it is delivered, and the guest may not write in the meantime.
  *
  * <p>The stream keeps each array written to it rather than copying it.
  */
@@ -28,6 +29,7 @@ public class BufferedHostOutputStream extends HostOutputStream {
 
     private final Queue<byte[]> chunks = new ConcurrentLinkedQueue<>();
     private final AtomicLong drained = new AtomicLong();
+    private final AtomicLong delivered = new AtomicLong();
     private final AtomicReference<End> end = new AtomicReference<>();
 
     /** Only the guest updates this, so the update needs no atomic operation. */
@@ -47,8 +49,8 @@ public class BufferedHostOutputStream extends HostOutputStream {
     }
 
     /**
-     * Takes everything the guest has written, which completes a flush once all it covers is taken
-     * and frees the buffer for more writes.
+     * Takes everything the guest has written. The bytes keep their room in the buffer until the
+     * consumer marks them delivered.
      */
     public byte[] drain() {
         byte[] first = chunks.poll();
@@ -66,10 +68,30 @@ public class BufferedHostOutputStream extends HostOutputStream {
             bytes = joined.toByteArray();
         }
         drained.addAndGet(bytes.length);
+        return bytes;
+    }
+
+    /**
+     * Marks {@code count} drained bytes as having reached their destination, which frees their
+     * room and completes a flush once everything written before it is delivered.
+     *
+     * @throws IllegalArgumentException when more bytes are marked than were drained
+     */
+    public void markDelivered(int count) {
+        long current;
+        do {
+            current = delivered.get();
+            if (count < 0 || current + count > drained.get()) {
+                throw new IllegalArgumentException(
+                        count
+                                + " bytes marked delivered, but "
+                                + (drained.get() - current)
+                                + " were drained and not yet delivered");
+            }
+        } while (!delivered.compareAndSet(current, current + count));
         if (isReady()) {
             readiness.complete(null);
         }
-        return bytes;
     }
 
     /** Ends the stream, which the guest sees on its next operation. */
@@ -92,8 +114,8 @@ public class BufferedHostOutputStream extends HostOutputStream {
     @Override
     protected long writeCapacity() {
         checkOpen();
-        long taken = drained.get();
-        return taken < flushedThrough ? 0 : capacity - (written - taken);
+        long done = delivered.get();
+        return done < flushedThrough ? 0 : capacity - (written - done);
     }
 
     @Override
@@ -105,7 +127,7 @@ public class BufferedHostOutputStream extends HostOutputStream {
         }
         written = written + contents.length;
         chunks.add(contents);
-        if (written - drained.get() >= capacity) {
+        if (written - delivered.get() >= capacity) {
             notReady();
         }
         onWritten.run();
@@ -114,7 +136,7 @@ public class BufferedHostOutputStream extends HostOutputStream {
     @Override
     protected void startFlush() {
         checkOpen();
-        if (written == drained.get()) {
+        if (written == delivered.get()) {
             return;
         }
         flushedThrough = written;
@@ -137,12 +159,12 @@ public class BufferedHostOutputStream extends HostOutputStream {
 
     /** Whether the guest may write, with no flush pending and room in the buffer, or has ended. */
     private boolean isReady() {
-        long taken = drained.get();
-        return end.get() != null || (taken >= flushedThrough && written - taken < capacity);
+        long done = delivered.get();
+        return end.get() != null || (done >= flushedThrough && written - done < capacity);
     }
 
     /**
-     * Makes {@link #readiness} pending. A consumer that drains or ends the stream meanwhile
+     * Makes {@link #readiness} pending. A consumer that delivers or ends the stream meanwhile
      * completes either the old future or the new one, which the check after publishing it
      * catches.
      */

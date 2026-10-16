@@ -84,9 +84,9 @@ class BufferedHostOutputStreamTest {
         assertThrows(TrapException.class, () -> stream.write(new byte[1]));
     }
 
-    /** A flush withholds writes until the consumer has taken everything written before it. */
+    /** A flush withholds writes until the consumer delivers everything written before it. */
     @Test
-    void aFlushHoldsWritesUntilTheConsumerTakesThem() {
+    void aFlushHoldsWritesUntilTheConsumerDeliversThem() {
         var stream = new BufferedHostOutputStream(poll, 8, null);
         Pollable pollable = stream.subscribe();
         stream.checkWrite();
@@ -97,8 +97,35 @@ class BufferedHostOutputStreamTest {
         assertEquals(BigInteger.ZERO, stream.checkWrite());
         assertFalse(pollable.ready());
         assertArrayEquals(bytes("flushed"), stream.drain());
+        assertEquals(BigInteger.ZERO, stream.checkWrite());
+        assertFalse(pollable.ready());
+        stream.markDelivered(7);
         assertEquals(len(8), stream.checkWrite());
         assertTrue(pollable.ready());
+    }
+
+    /** Bytes the consumer is still delivering count against the room the guest has. */
+    @Test
+    void drainedBytesKeepTheirRoomUntilDelivered() {
+        var stream = new BufferedHostOutputStream(poll, 8, null);
+        stream.checkWrite();
+        stream.write(bytes("abc"));
+
+        stream.drain();
+
+        assertEquals(len(5), stream.checkWrite());
+        stream.markDelivered(2);
+        assertEquals(len(7), stream.checkWrite());
+    }
+
+    @Test
+    void markingMoreThanWasDrainedIsRefused() {
+        var stream = new BufferedHostOutputStream(poll, 8, null);
+        stream.checkWrite();
+        stream.write(bytes("abc"));
+        stream.drain();
+
+        assertThrows(IllegalArgumentException.class, () -> stream.markDelivered(4));
     }
 
     @Test
@@ -119,7 +146,7 @@ class BufferedHostOutputStreamTest {
         stream.write(new byte[4]);
 
         assertFalse(pollable.ready());
-        stream.drain();
+        stream.markDelivered(stream.drain().length);
         assertTrue(pollable.ready());
     }
 
@@ -258,12 +285,12 @@ class BufferedHostOutputStreamTest {
     }
 
     /**
-     * A consumer on another thread draining as fast as it can, against a guest that writes and
-     * flushes. A flush that completed before everything it covers was taken would leave bytes to
-     * drain, or less than the full capacity to write, once it returned.
+     * A consumer on another thread delivering as fast as it can, against a guest that writes and
+     * flushes. A flush that completed before everything it covers was delivered would leave bytes
+     * to drain, or less than the full capacity to write, once it returned.
      */
     @Test
-    void aFlushCoversEveryWriteBeforeItDespiteConcurrentDrains() {
+    void aFlushCoversEveryWriteBeforeItDespiteConcurrentDeliveries() {
         byte[] expected = new byte[200_000];
         new Random(1).nextBytes(expected);
         var stream = new BufferedHostOutputStream(poll, 64, null);
@@ -273,7 +300,7 @@ class BufferedHostOutputStreamTest {
                 new Thread(
                         () -> {
                             while (!done.get()) {
-                                consumed.writeBytes(stream.drain());
+                                deliver(stream, consumed);
                             }
                         });
 
@@ -336,11 +363,17 @@ class BufferedHostOutputStreamTest {
                 });
     }
 
-    /** Drains {@code stream} into {@code consumed} every few milliseconds on the scheduler. */
+    /** Delivers {@code stream} into {@code consumed} every few milliseconds on the scheduler. */
     private ScheduledFuture<?> drainEvery(
             BufferedHostOutputStream stream, ByteArrayOutputStream consumed) {
         return scheduler.scheduleAtFixedRate(
-                () -> consumed.writeBytes(stream.drain()), 5, 5, TimeUnit.MILLISECONDS);
+                () -> deliver(stream, consumed), 5, 5, TimeUnit.MILLISECONDS);
+    }
+
+    private static void deliver(BufferedHostOutputStream stream, ByteArrayOutputStream consumed) {
+        byte[] bytes = stream.drain();
+        consumed.writeBytes(bytes);
+        stream.markDelivered(bytes.length);
     }
 
     private static void await(CyclicBarrier barrier) {
