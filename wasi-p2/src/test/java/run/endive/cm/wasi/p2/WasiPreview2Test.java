@@ -2,6 +2,7 @@ package run.endive.cm.wasi.p2;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.roastedroot.zerofs.Configuration;
@@ -22,6 +23,8 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import run.endive.cm.runtime.Tuple2;
 import run.endive.cm.wasi.p2.bindings.wasi.clocks.wallclock.Datetime;
+import run.endive.cm.wasi.p2.sockets.NetworkPolicy;
+import run.endive.cm.wasi.p2.sockets.network.HostNetwork;
 
 class WasiPreview2Test {
 
@@ -95,6 +98,26 @@ class WasiPreview2Test {
     void noDirectoryIsPreopenedByDefault() {
         try (var wasi = WasiPreview2.builder().build()) {
             assertEquals(List.of(), wasi.preopens().getDirectories());
+        }
+    }
+
+    @Test
+    void theGuestIsDeniedTheNetworkByDefault() {
+        try (var wasi = WasiPreview2.builder().build()) {
+            HostNetwork network = HostNetwork.of(wasi.instanceNetwork().instanceNetwork());
+
+            assertSame(NetworkPolicy.denyAll(), network.policy());
+        }
+    }
+
+    @Test
+    void theGuestIsGrantedTheNetworkPolicyGiven() {
+        NetworkPolicy policy = NetworkPolicy.allowAll();
+
+        try (var wasi = WasiPreview2.builder().withNetworkPolicy(policy).build()) {
+            HostNetwork network = HostNetwork.of(wasi.instanceNetwork().instanceNetwork());
+
+            assertSame(policy, network.policy());
         }
     }
 }

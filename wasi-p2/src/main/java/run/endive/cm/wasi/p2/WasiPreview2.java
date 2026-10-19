@@ -24,6 +24,7 @@ import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.cm.wasi.p2.random.insecure.HostInsecure;
 import run.endive.cm.wasi.p2.random.insecureseed.HostInsecureSeed;
 import run.endive.cm.wasi.p2.random.random.HostRandom;
+import run.endive.cm.wasi.p2.sockets.NetworkPolicy;
 import run.endive.cm.wasi.p2.sockets.instancenetwork.HostInstanceNetwork;
 import run.endive.cm.wasi.p2.sockets.ipnamelookup.HostIpNameLookup;
 import run.endive.cm.wasi.p2.sockets.tcpcreatesocket.HostTcpCreateSocket;
@@ -77,7 +78,7 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
                         : new HostInsecure(builder.insecureRandom);
         this.insecureSeed =
                 builder.insecureSeed == null ? new HostInsecureSeed() : builder.insecureSeed;
-        this.instanceNetwork = new HostInstanceNetwork();
+        this.instanceNetwork = new HostInstanceNetwork(builder.networkPolicy);
         this.ipNameLookup = new HostIpNameLookup();
         this.tcpCreateSocket = new HostTcpCreateSocket();
         this.udpCreateSocket = new HostUdpCreateSocket();
@@ -187,6 +188,7 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         private Random random;
         private Random insecureRandom;
         private HostInsecureSeed insecureSeed;
+        private NetworkPolicy networkPolicy = NetworkPolicy.denyAll();
 
         private Builder() {}
 
@@ -282,6 +284,15 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
          */
         public Builder withInsecureSeed(long first, long second) {
             this.insecureSeed = new HostInsecureSeed(first, second);
+            return this;
+        }
+
+        /**
+         * What the guest may do on the network through {@code wasi:sockets}. By default, it may do
+         * nothing.
+         */
+        public Builder withNetworkPolicy(NetworkPolicy policy) {
+            this.networkPolicy = Objects.requireNonNull(policy, "policy");
             return this;
         }
 
