@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.netty.util.concurrent.DefaultEventExecutor;
@@ -14,7 +15,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.Random;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +32,8 @@ import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.runtime.TrapException;
 
 class BufferedHostOutputStreamTest {
+
+    private static final int RACE_ROUNDS = 20_000;
 
     private EventExecutor executor;
     private HostPoll poll;
@@ -248,11 +257,98 @@ class BufferedHostOutputStreamTest {
         assertClosed(() -> output.splice(input, len(10)));
     }
 
+    /**
+     * A consumer on another thread draining as fast as it can, against a guest that writes and
+     * flushes. A flush that completed before everything it covers was taken would leave bytes to
+     * drain, or less than the full capacity to write, once it returned.
+     */
+    @Test
+    void aFlushCoversEveryWriteBeforeItDespiteConcurrentDrains() {
+        byte[] expected = new byte[200_000];
+        new Random(1).nextBytes(expected);
+        var stream = new BufferedHostOutputStream(executor, poll, 64, null);
+        AtomicBoolean done = new AtomicBoolean();
+        ByteArrayOutputStream consumed = new ByteArrayOutputStream();
+        Thread consumer =
+                new Thread(
+                        () -> {
+                            while (!done.get()) {
+                                consumed.writeBytes(stream.drain());
+                            }
+                        });
+
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(30),
+                () -> {
+                    consumer.start();
+                    Random sizes = new Random(2);
+                    int offset = 0;
+                    while (offset < expected.length) {
+                        int end = Math.min(expected.length, offset + 1 + sizes.nextInt(200));
+                        stream.blockingWriteAndFlush(Arrays.copyOfRange(expected, offset, end));
+                        assertEquals(0, stream.drain().length);
+                        assertEquals(len(64), stream.checkWrite());
+                        offset = end;
+                    }
+                    done.set(true);
+                    consumer.join();
+                });
+        consumed.writeBytes(stream.drain());
+        assertArrayEquals(expected, consumed.toByteArray());
+    }
+
+    /**
+     * Closing races a write that fills the buffer, round after round. However they interleave, a
+     * guest waiting on the stream afterward is woken.
+     */
+    @Test
+    void aGuestWaitingOnAFullStreamSeesItClose() {
+        CyclicBarrier start = new CyclicBarrier(2);
+        BufferedHostOutputStream[] round = new BufferedHostOutputStream[1];
+        Thread closer =
+                new Thread(
+                        () -> {
+                            for (int i = 0; i < RACE_ROUNDS; i++) {
+                                await(start);
+                                round[0].close();
+                                await(start);
+                            }
+                        });
+
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(30),
+                () -> {
+                    closer.start();
+                    for (int i = 0; i < RACE_ROUNDS; i++) {
+                        var stream = new BufferedHostOutputStream(executor, poll, 4, null);
+                        stream.checkWrite();
+                        round[0] = stream;
+                        await(start);
+                        try {
+                            stream.write(new byte[4]);
+                        } catch (StreamErrorException e) {
+                            assertInstanceOf(StreamError.Closed.class, e.error());
+                        }
+                        stream.subscribe().block();
+                        await(start);
+                    }
+                    closer.join();
+                });
+    }
+
     /** Drains {@code stream} into {@code consumed} every few milliseconds on the event loop. */
     private ScheduledFuture<?> drainEvery(
             BufferedHostOutputStream stream, ByteArrayOutputStream consumed) {
         return executor.scheduleAtFixedRate(
                 () -> consumed.writeBytes(stream.drain()), 5, 5, TimeUnit.MILLISECONDS);
+    }
+
+    private static void await(CyclicBarrier barrier) {
+        try {
+            barrier.await();
+        } catch (InterruptedException | BrokenBarrierException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private static void assertClosed(Runnable operation) {

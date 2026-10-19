@@ -5,14 +5,22 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.Random;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
@@ -25,6 +33,8 @@ import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.wasm.WasmEngineException;
 
 class BufferedHostInputStreamTest {
+
+    private static final int RACE_ROUNDS = 100_000;
 
     private EventExecutor executor;
     private HostPoll poll;
@@ -172,6 +182,90 @@ class BufferedHostInputStreamTest {
         assertEquals(0, demand.get());
         stream.read(len(2));
         assertEquals(1, demand.get());
+    }
+
+    /**
+     * A source on another thread that pauses whenever asked and waits for demand, against a guest
+     * that blocks for each read. A lost resume or a lost wakeup would leave both waiting.
+     */
+    @Test
+    void aPausingSourceAndABlockingGuestHandOverEverything() {
+        byte[] expected = new byte[200_000];
+        new Random(1).nextBytes(expected);
+        Semaphore demand = new Semaphore(0);
+        var stream = new BufferedHostInputStream(executor, poll, 64, demand::release);
+        Thread source = new Thread(() -> produce(stream, expected, demand));
+        ByteArrayOutputStream received = new ByteArrayOutputStream();
+
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(30),
+                () -> {
+                    source.start();
+                    try {
+                        while (true) {
+                            received.writeBytes(stream.blockingRead(len(37)));
+                        }
+                    } catch (StreamErrorException e) {
+                        assertInstanceOf(StreamError.Closed.class, e.error());
+                    }
+                    source.join();
+                });
+        assertArrayEquals(expected, received.toByteArray());
+    }
+
+    /**
+     * A source offers one byte as the guest starts a blocking read, round after round, waiting a
+     * little longer each round so the offer lands at every point of the read. However they
+     * interleave, the guest receives it.
+     */
+    @Test
+    void aGuestBlockingOnAnEmptyStreamSeesTheNextOffer() {
+        var stream = new BufferedHostInputStream(executor, poll);
+        CyclicBarrier start = new CyclicBarrier(2);
+        Thread source =
+                new Thread(
+                        () -> {
+                            for (int i = 0; i < RACE_ROUNDS; i++) {
+                                await(start);
+                                for (int spin = i % 256; spin > 0; spin--) {
+                                    Thread.onSpinWait();
+                                }
+                                stream.offer(new byte[] {(byte) i});
+                            }
+                        });
+
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(30),
+                () -> {
+                    source.start();
+                    for (int i = 0; i < RACE_ROUNDS; i++) {
+                        await(start);
+                        assertArrayEquals(new byte[] {(byte) i}, stream.blockingRead(len(1)));
+                    }
+                    source.join();
+                });
+    }
+
+    /** Offers {@code bytes} in pieces of varying size, waiting for demand whenever asked to pause. */
+    private static void produce(BufferedHostInputStream stream, byte[] bytes, Semaphore demand) {
+        Random sizes = new Random(2);
+        int offset = 0;
+        while (offset < bytes.length) {
+            int end = Math.min(bytes.length, offset + 1 + sizes.nextInt(50));
+            if (!stream.offer(Arrays.copyOfRange(bytes, offset, end))) {
+                demand.acquireUninterruptibly();
+            }
+            offset = end;
+        }
+        stream.close();
+    }
+
+    private static void await(CyclicBarrier barrier) {
+        try {
+            barrier.await();
+        } catch (InterruptedException | BrokenBarrierException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private static void assertClosed(Runnable operation) {

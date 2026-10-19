@@ -1,17 +1,18 @@
 package run.endive.cm.wasi.p2.io.streams;
 
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.concurrent.locks.ReentrantLock;
 import run.endive.cm.wasi.p2.io.poll.HostPoll;
 
 /**
  * An input stream holding what a source has produced until the guest reads it. The source may run
  * on any thread, such as an event loop delivering a channel's bytes or a thread reading a blocking
- * Java stream.
+ * Java stream. Neither side ever waits on the other.
  *
  * <p>The source is asked to pause once the buffer holds {@code capacity} bytes, by {@link #offer}
  * answering {@code false}, and to resume through {@code onDemand} once the guest has read it below
@@ -21,22 +22,23 @@ public class BufferedHostInputStream extends HostInputStream {
 
     private static final Runnable NO_DEMAND = () -> {};
 
+    /** The bit of {@link #state} that records the source was asked to pause. */
+    private static final long PAUSED = 1L << 62;
+
     private final EventExecutor eventLoopExecutor;
     private final int capacity;
     private final Runnable onDemand;
 
-    private final ReentrantLock lock = new ReentrantLock();
-    private final Deque<byte[]> chunks = new ArrayDeque<>();
-    private int headOffset;
-    private int buffered;
-    private boolean paused;
-    private boolean closed;
-    private Throwable failure;
+    private final Queue<byte[]> chunks = new ConcurrentLinkedQueue<>();
+    private final AtomicLong state = new AtomicLong();
+    private final AtomicReference<End> end = new AtomicReference<>();
     private volatile Promise<Void> readiness;
+    private byte[] head;
+    private int headOffset;
 
     /**
      * @param capacity how many bytes may be buffered before the source is asked to pause
-     * @param onDemand run once a paused source should resume, outside of any lock this holds
+     * @param onDemand run once a paused source should resume
      */
     public BufferedHostInputStream(
             EventExecutor eventLoopExecutor, HostPoll poll, int capacity, Runnable onDemand) {
@@ -59,45 +61,35 @@ public class BufferedHostInputStream extends HostInputStream {
      * @return whether the source may keep producing, which is {@code false} once the buffer is full
      */
     public boolean offer(byte[] bytes) {
-        lock.lock();
-        try {
-            if (closed || failure != null) {
-                return false;
-            }
-            if (bytes.length > 0) {
-                chunks.addLast(bytes);
-                buffered += bytes.length;
-                readiness.trySuccess(null);
-            }
-            paused = buffered >= capacity;
-            return !paused;
-        } finally {
-            lock.unlock();
+        if (end.get() != null) {
+            return false;
         }
+        if (bytes.length > 0) {
+            chunks.add(bytes);
+        }
+        long current;
+        long next;
+        do {
+            current = state.get();
+            long buffered = (current & ~PAUSED) + bytes.length;
+            next = buffered >= capacity ? buffered | PAUSED : buffered;
+        } while (!state.compareAndSet(current, next));
+        if (bytes.length > 0) {
+            readiness.trySuccess(null);
+        }
+        return (next & PAUSED) == 0;
     }
 
     /** Ends the stream, which the guest sees once it has read everything buffered. */
     public void close() {
-        lock.lock();
-        try {
-            closed = true;
-            readiness.trySuccess(null);
-        } finally {
-            lock.unlock();
-        }
+        end.compareAndSet(null, End.CLOSED);
+        readiness.trySuccess(null);
     }
 
     /** Fails the stream with {@code cause}, reported to the guest ahead of anything buffered. */
     public void fail(Throwable cause) {
-        lock.lock();
-        try {
-            if (failure == null && !closed) {
-                failure = cause;
-            }
-            readiness.trySuccess(null);
-        } finally {
-            lock.unlock();
-        }
+        end.compareAndSet(null, new End(cause));
+        readiness.trySuccess(null);
     }
 
     @Override
@@ -105,63 +97,99 @@ public class BufferedHostInputStream extends HostInputStream {
         return readiness;
     }
 
+    /** Called only by the guest, which reads from one thread at a time. */
     @Override
     protected byte[] readAvailable(int max) {
-        byte[] bytes;
-        boolean resume;
-        lock.lock();
-        try {
-            if (failure != null) {
-                Throwable cause = failure;
-                failure = null;
-                closed = true;
-                discard();
-                throw StreamErrors.failed(cause);
-            }
-            if (buffered == 0) {
-                if (closed) {
-                    throw StreamErrors.closed();
-                }
-                return new byte[0];
-            }
-            bytes = take(max);
-            if (buffered == 0 && !closed) {
-                readiness = eventLoopExecutor.newPromise();
-            }
-            resume = paused && buffered < capacity / 2;
-            if (resume) {
-                paused = false;
-            }
-        } finally {
-            lock.unlock();
+        End ended = end.get();
+        if (ended != null && ended.failure != null) {
+            end.set(End.CLOSED);
+            chunks.clear();
+            head = null;
+            throw StreamErrors.failed(ended.failure);
         }
-        if (resume) {
+        if (!hasBytes()) {
+            if (ended != null) {
+                throw StreamErrors.closed();
+            }
+            awaitBytes();
+            return new byte[0];
+        }
+        byte[] bytes = take(max);
+        if (!hasBytes()) {
+            awaitBytes();
+        }
+        if (bytes.length > 0 && taken(bytes.length)) {
             onDemand.run();
         }
         return bytes;
     }
 
+    /** Whether a chunk is left to read, moving the next one to the head when that is used up. */
+    private boolean hasBytes() {
+        if (head == null) {
+            head = chunks.poll();
+            headOffset = 0;
+        }
+        return head != null;
+    }
+
+    /**
+     * Takes up to {@code max} of the bytes counted in {@link #state}. A source counts its bytes
+     * only after queueing them, so those counted are always there to take.
+     */
     private byte[] take(int max) {
-        byte[] bytes = new byte[Math.min(max, buffered)];
+        byte[] bytes = new byte[(int) Math.min(max, state.get() & ~PAUSED)];
         int filled = 0;
         while (filled < bytes.length) {
-            byte[] head = chunks.peekFirst();
+            hasBytes();
             int count = Math.min(bytes.length - filled, head.length - headOffset);
             System.arraycopy(head, headOffset, bytes, filled, count);
             filled += count;
             headOffset += count;
             if (headOffset == head.length) {
-                chunks.removeFirst();
-                headOffset = 0;
+                head = null;
             }
         }
-        buffered -= bytes.length;
         return bytes;
     }
 
-    private void discard() {
-        chunks.clear();
-        headOffset = 0;
-        buffered = 0;
+    /** Counts {@code count} bytes as read, answering whether the source should now resume. */
+    private boolean taken(int count) {
+        while (true) {
+            long current = state.get();
+            long buffered = (current & ~PAUSED) - count;
+            boolean resume = (current & PAUSED) != 0 && buffered < capacity / 2;
+            if (state.compareAndSet(current, resume ? buffered : buffered | (current & PAUSED))) {
+                return resume;
+            }
+        }
+    }
+
+    /**
+     * Makes {@link #readiness} pending once the buffer is empty. A source that offers or ends the
+     * stream meanwhile completes either the old promise or the new one, which the check after
+     * publishing it catches.
+     */
+    private void awaitBytes() {
+        if (!readiness.isDone()) {
+            return;
+        }
+        Promise<Void> pending = eventLoopExecutor.newPromise();
+        readiness = pending;
+        if (!chunks.isEmpty() || end.get() != null) {
+            pending.trySuccess(null);
+        }
+    }
+
+    /** How the stream ended, with the failure the guest has yet to see, if any. */
+    private static final class End {
+
+        static final End CLOSED = new End(null);
+
+        final Throwable failure;
+
+        End(Throwable failure) {
+            this.failure = failure;
+        }
     }
 }
