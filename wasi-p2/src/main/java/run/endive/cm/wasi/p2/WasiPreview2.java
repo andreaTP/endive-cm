@@ -24,6 +24,10 @@ import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.cm.wasi.p2.random.insecure.HostInsecure;
 import run.endive.cm.wasi.p2.random.insecureseed.HostInsecureSeed;
 import run.endive.cm.wasi.p2.random.random.HostRandom;
+import run.endive.cm.wasi.p2.sockets.instancenetwork.HostInstanceNetwork;
+import run.endive.cm.wasi.p2.sockets.ipnamelookup.HostIpNameLookup;
+import run.endive.cm.wasi.p2.sockets.tcpcreatesocket.HostTcpCreateSocket;
+import run.endive.cm.wasi.p2.sockets.udpcreatesocket.HostUdpCreateSocket;
 
 /**
  * The WASI preview 2 interfaces this host implements, ready to satisfy a component's imports.
@@ -50,6 +54,10 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     private final HostRandom random;
     private final HostInsecure insecure;
     private final HostInsecureSeed insecureSeed;
+    private final HostInstanceNetwork instanceNetwork;
+    private final HostIpNameLookup ipNameLookup;
+    private final HostTcpCreateSocket tcpCreateSocket;
+    private final HostUdpCreateSocket udpCreateSocket;
 
     private WasiPreview2(Builder builder) {
         this.ownsScheduler = builder.scheduler == null;
@@ -69,6 +77,10 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
                         : new HostInsecure(builder.insecureRandom);
         this.insecureSeed =
                 builder.insecureSeed == null ? new HostInsecureSeed() : builder.insecureSeed;
+        this.instanceNetwork = new HostInstanceNetwork();
+        this.ipNameLookup = new HostIpNameLookup();
+        this.tcpCreateSocket = new HostTcpCreateSocket();
+        this.udpCreateSocket = new HostUdpCreateSocket();
     }
 
     public static Builder builder() {
@@ -118,6 +130,26 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     @Override
     public HostInsecureSeed insecureSeed() {
         return insecureSeed;
+    }
+
+    @Override
+    public HostInstanceNetwork instanceNetwork() {
+        return instanceNetwork;
+    }
+
+    @Override
+    public HostIpNameLookup ipNameLookup() {
+        return ipNameLookup;
+    }
+
+    @Override
+    public HostTcpCreateSocket tcpCreateSocket() {
+        return tcpCreateSocket;
+    }
+
+    @Override
+    public HostUdpCreateSocket udpCreateSocket() {
+        return udpCreateSocket;
     }
 
     /**
