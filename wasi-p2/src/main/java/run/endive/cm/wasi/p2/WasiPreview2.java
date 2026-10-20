@@ -1,9 +1,15 @@
 package run.endive.cm.wasi.p2;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import run.endive.cm.runtime.ComponentStore;
@@ -11,6 +17,9 @@ import run.endive.cm.types.WasmComponent;
 import run.endive.cm.wasi.p2.bindings.ImportsWorld;
 import run.endive.cm.wasi.p2.clocks.monotonicclock.HostMonotonicClock;
 import run.endive.cm.wasi.p2.clocks.wallclock.HostWallClock;
+import run.endive.cm.wasi.p2.filesystem.preopens.HostPreopens;
+import run.endive.cm.wasi.p2.filesystem.types.HostTypes;
+import run.endive.cm.wasi.p2.filesystem.types.OpenFiles;
 import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.cm.wasi.p2.random.insecure.HostInsecure;
 import run.endive.cm.wasi.p2.random.insecureseed.HostInsecureSeed;
@@ -35,6 +44,9 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     private final HostPoll poll;
     private final HostMonotonicClock monotonicClock;
     private final HostWallClock wallClock;
+    private final HostTypes types;
+    private final OpenFiles files = new OpenFiles();
+    private final HostPreopens preopens;
     private final HostRandom random;
     private final HostInsecure insecure;
     private final HostInsecureSeed insecureSeed;
@@ -48,6 +60,8 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
                 builder.clock == null
                         ? new HostWallClock()
                         : new HostWallClock(builder.clock, builder.clockResolution);
+        this.types = new HostTypes();
+        this.preopens = new HostPreopens(builder.directories, builder.readOnly, poll, files);
         this.random = builder.random == null ? new HostRandom() : new HostRandom(builder.random);
         this.insecure =
                 builder.insecureRandom == null
@@ -82,6 +96,16 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     }
 
     @Override
+    public HostTypes types() {
+        return types;
+    }
+
+    @Override
+    public HostPreopens preopens() {
+        return preopens;
+    }
+
+    @Override
     public HostRandom random() {
         return random;
     }
@@ -96,9 +120,13 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         return insecureSeed;
     }
 
-    /** Shuts down the scheduler, unless the builder was given an external one to use. */
+    /**
+     * Closes every file a guest left open, and shuts down the scheduler unless the builder was
+     * given an external one to use.
+     */
     @Override
     public void close() {
+        files.close();
         if (ownsScheduler) {
             scheduler.shutdownNow();
         }
@@ -122,6 +150,8 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         private ScheduledExecutorService scheduler;
         private Clock clock;
         private Duration clockResolution;
+        private final Map<String, Path> directories = new LinkedHashMap<>();
+        private final Set<String> readOnly = new HashSet<>();
         private Random random;
         private Random insecureRandom;
         private HostInsecureSeed insecureSeed;
@@ -148,6 +178,49 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         public Builder withWallClock(Clock clock, Duration resolution) {
             this.clock = Objects.requireNonNull(clock, "clock");
             this.clockResolution = Objects.requireNonNull(resolution, "resolution");
+            return this;
+        }
+
+        /**
+         * Grants the guest {@code host} as a preopened directory named {@code guest}. Any
+         * {@link java.nio.file.FileSystem} works, so an in-memory one makes a sandbox that touches
+         * no host files.
+         *
+         * <p>The guest cannot reach outside {@code host} by itself. Java checks a path and then
+         * acts on it in separate steps, though, so nothing else may change {@code host} while an
+         * untrusted guest uses it.
+         *
+         * @throws IllegalArgumentException when {@code host} is not a directory, or {@code guest}
+         *     already names one
+         */
+        public Builder withDirectory(String guest, Path host) {
+            return grant(guest, host, false);
+        }
+
+        /**
+         * Grants the guest {@code host} as a preopened directory named {@code guest}, which it
+         * may read but not change in any way.
+         *
+         * @throws IllegalArgumentException when {@code host} is not a directory, or {@code guest}
+         *     already names one
+         */
+        public Builder withReadOnlyDirectory(String guest, Path host) {
+            return grant(guest, host, true);
+        }
+
+        private Builder grant(String guest, Path host, boolean readOnly) {
+            Objects.requireNonNull(guest, "guest");
+            Objects.requireNonNull(host, "host");
+            if (!Files.isDirectory(host)) {
+                throw new IllegalArgumentException(host + " is not a directory");
+            }
+            if (directories.containsKey(guest)) {
+                throw new IllegalArgumentException("a directory is already granted as " + guest);
+            }
+            directories.put(guest, host);
+            if (readOnly) {
+                this.readOnly.add(guest);
+            }
             return this;
         }
 
