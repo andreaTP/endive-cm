@@ -15,9 +15,13 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.stream.Collectors;
+import run.endive.cm.abi.VariantValue;
+import run.endive.cm.runtime.ComponentInstance;
 import run.endive.cm.runtime.ComponentStore;
 import run.endive.cm.types.WasmComponent;
 import run.endive.cm.wasi.p2.bindings.ImportsWorld;
+import run.endive.cm.wasi.p2.cli.WasiExitException;
 import run.endive.cm.wasi.p2.cli.environment.HostEnvironment;
 import run.endive.cm.wasi.p2.cli.exit.HostExit;
 import run.endive.cm.wasi.p2.cli.stderr.HostStderr;
@@ -55,6 +59,9 @@ import run.endive.cm.wasi.p2.sockets.netty.NettyNameResolver;
  * }</pre>
  */
 public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
+
+    /** The prefix naming every 0.2 version of {@code wasi:cli/run}. */
+    private static final String CLI_RUN = "wasi:cli/run@0.2.";
 
     private final ScheduledExecutorService scheduler;
     private final boolean ownsScheduler;
@@ -129,6 +136,36 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     /** Instantiates {@code component}, satisfying its WASI imports with this host. */
     public ImportsWorld instantiate(ComponentStore store, WasmComponent component) {
         return ImportsWorld.instantiate(store, component, this);
+    }
+
+    /**
+     * Instantiates {@code component} and calls the {@code run} it exports from {@code
+     * wasi:cli/run}, giving back the exit code. That is 0 when {@code run} returns {@code ok}, 1
+     * when it returns {@code err}, and the code the guest passes to {@code wasi:cli/exit} when it
+     * exits. An exit abandons the guest's call partway, so the instance should not be called
+     * again.
+     *
+     * @throws IllegalArgumentException when {@code component} does not export {@code wasi:cli/run}
+     * @see <a href="https://github.com/WebAssembly/WASI/blob/v0.2.12/proposals/cli/wit/run.wit">wasi:cli/run</a>
+     */
+    public int run(ComponentStore store, WasmComponent component) {
+        try {
+            ComponentInstance instance = instantiate(store, component).instance();
+            List<String> runs =
+                    instance.exportNames().stream()
+                            .filter(name -> name.startsWith(CLI_RUN))
+                            .collect(Collectors.toList());
+            if (runs.size() != 1) {
+                throw new IllegalArgumentException(
+                        "the component exports "
+                                + instance.exportNames()
+                                + " rather than one wasi:cli/run");
+            }
+            Object[] status = instance.exportedInstance(runs.get(0)).export("run").apply();
+            return "ok".equals(((VariantValue) status[0]).label()) ? 0 : 1;
+        } catch (WasiExitException e) {
+            return e.exitCode();
+        }
     }
 
     @Override
