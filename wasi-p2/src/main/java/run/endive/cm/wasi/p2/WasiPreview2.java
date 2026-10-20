@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
@@ -15,6 +16,8 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import run.endive.cm.runtime.ComponentStore;
 import run.endive.cm.types.WasmComponent;
 import run.endive.cm.wasi.p2.bindings.ImportsWorld;
+import run.endive.cm.wasi.p2.cli.environment.HostEnvironment;
+import run.endive.cm.wasi.p2.cli.exit.HostExit;
 import run.endive.cm.wasi.p2.clocks.monotonicclock.HostMonotonicClock;
 import run.endive.cm.wasi.p2.clocks.wallclock.HostWallClock;
 import run.endive.cm.wasi.p2.filesystem.preopens.HostPreopens;
@@ -58,6 +61,8 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     private final HostInsecure insecure;
     private final HostInsecureSeed insecureSeed;
     private final HostInstanceNetwork instanceNetwork;
+    private final HostEnvironment environment;
+    private final HostExit exit;
 
     private WasiPreview2(Builder builder) {
         this.poll = new HostPoll();
@@ -89,6 +94,8 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
             this.insecureSeed =
                     builder.insecureSeed == null ? new HostInsecureSeed() : builder.insecureSeed;
             this.instanceNetwork = new HostInstanceNetwork(builder.networkPolicy);
+            this.environment = new HostEnvironment(builder.arguments, builder.environment);
+            this.exit = new HostExit();
         } catch (RuntimeException e) {
             close();
             throw e;
@@ -164,6 +171,16 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         return sockets.udpCreateSocket();
     }
 
+    @Override
+    public HostEnvironment environment() {
+        return environment;
+    }
+
+    @Override
+    public HostExit exit() {
+        return exit;
+    }
+
     /**
      * Closes every file a guest left open and what the network created, then shuts down the
      * scheduler. Anything the builder was given stays open.
@@ -200,6 +217,8 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         private Random random;
         private Random insecureRandom;
         private HostInsecureSeed insecureSeed;
+        private List<String> arguments = List.of();
+        private final Map<String, String> environment = new LinkedHashMap<>();
         private NetworkPolicy networkPolicy = NetworkPolicy.denyAll();
         private NameResolver nameResolver;
 
@@ -299,6 +318,23 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
          */
         public Builder withInsecureSeed(long first, long second) {
             this.insecureSeed = new HostInsecureSeed(first, second);
+            return this;
+        }
+
+        /** The arguments {@code wasi:cli/environment} hands the guest, which are none by default. */
+        public Builder withArguments(List<String> arguments) {
+            this.arguments = List.copyOf(arguments);
+            return this;
+        }
+
+        /**
+         * Adds a variable to the environment {@code wasi:cli/environment} hands the guest, which is
+         * empty by default. The guest sees the variables in the order they were first added, and a
+         * name added again keeps its last value.
+         */
+        public Builder withEnvironment(String name, String value) {
+            environment.put(
+                    Objects.requireNonNull(name, "name"), Objects.requireNonNull(value, "value"));
             return this;
         }
 

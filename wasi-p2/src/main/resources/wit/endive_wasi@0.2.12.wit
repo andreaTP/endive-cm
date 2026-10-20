@@ -6,4 +6,6 @@ world imports {
   include wasi:filesystem/imports@0.2.12;
   include wasi:random/imports@0.2.12;
   include wasi:sockets/imports@0.2.12;
+  import wasi:cli/environment@0.2.12;
+  import wasi:cli/exit@0.2.12;
 }
