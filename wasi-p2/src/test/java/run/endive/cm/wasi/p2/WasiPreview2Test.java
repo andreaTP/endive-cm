@@ -97,4 +97,27 @@ class WasiPreview2Test {
             assertEquals(List.of(), wasi.preopens().getDirectories());
         }
     }
+
+    /** By default there are no arguments and no variables. */
+    @Test
+    void theCommandLineIsEmptyByDefault() {
+        try (var wasi = WasiPreview2.builder().build()) {
+            assertEquals(List.of(), wasi.environment().getArguments());
+            assertEquals(List.of(), wasi.environment().getEnvironment());
+        }
+    }
+
+    @Test
+    void aVariableAddedAgainKeepsItsPlaceAndTakesTheLastValue() {
+        try (var wasi =
+                WasiPreview2.builder()
+                        .withEnvironment("A", "1")
+                        .withEnvironment("B", "2")
+                        .withEnvironment("A", "3")
+                        .build()) {
+            assertEquals(
+                    List.of(Tuple2.of("A", "3"), Tuple2.of("B", "2")),
+                    wasi.environment().getEnvironment());
+        }
+    }
 }
