@@ -66,6 +66,7 @@ public final class ComponentInstance implements TypeResolver {
 
     private final Map<String, Object> exports = new LinkedHashMap<>();
     private final Map<String, Object> imports = new LinkedHashMap<>();
+    private InterfaceVersions hostVersions;
 
     private final Table handles = new Table();
     private boolean mayEnter;
@@ -368,7 +369,10 @@ public final class ComponentInstance implements TypeResolver {
     Map.Entry<String, Object> resolveImport(String name) {
         String supplied;
         if (parent == null) {
-            supplied = InterfaceVersions.resolve(name, imports.keySet());
+            if (hostVersions == null) {
+                hostVersions = new InterfaceVersions(imports.keySet());
+            }
+            supplied = hostVersions.resolve(name);
         } else {
             supplied = imports.containsKey(name) ? name : null;
         }
@@ -559,11 +563,13 @@ public final class ComponentInstance implements TypeResolver {
 
         Builder addImport(String name, Object value) {
             instance().imports.put(name, value);
+            instance().hostVersions = null;
             return this;
         }
 
         Builder addImports(Map<String, Object> imports) {
             instance().imports.putAll(imports);
+            instance().hostVersions = null;
             return this;
         }
 

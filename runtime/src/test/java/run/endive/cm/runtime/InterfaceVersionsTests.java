@@ -82,29 +82,24 @@ public class InterfaceVersionsTests {
 
     @Test
     public void anExactNameIsPreferred() {
-        assertEquals(
-                "a:b/c@0.2.6",
-                InterfaceVersions.resolve("a:b/c@0.2.6", List.of("a:b/c@0.2.12", "a:b/c@0.2.6")));
+        assertEquals("a:b/c@0.2.6", resolve("a:b/c@0.2.6", List.of("a:b/c@0.2.12", "a:b/c@0.2.6")));
     }
 
     /** An exact name needs no version, so it matches even where no compatible key exists. */
     @Test
     public void anExactNameMatchesWithoutAKey() {
-        assertEquals(
-                "a:b/c@0.0.3", InterfaceVersions.resolve("a:b/c@0.0.3", List.of("a:b/c@0.0.3")));
-        assertEquals("a:b/c", InterfaceVersions.resolve("a:b/c", List.of("a:b/c")));
+        assertEquals("a:b/c@0.0.3", resolve("a:b/c@0.0.3", List.of("a:b/c@0.0.3")));
+        assertEquals("a:b/c", resolve("a:b/c", List.of("a:b/c")));
     }
 
     @Test
     public void aNewerCompatibleVersionIsChosen() {
-        assertEquals(
-                "a:b/c@0.2.12", InterfaceVersions.resolve("a:b/c@0.2.6", List.of("a:b/c@0.2.12")));
+        assertEquals("a:b/c@0.2.12", resolve("a:b/c@0.2.6", List.of("a:b/c@0.2.12")));
     }
 
     @Test
     public void anOlderCompatibleVersionIsChosen() {
-        assertEquals(
-                "a:b/c@1.0.0", InterfaceVersions.resolve("a:b/c@1.4.0", List.of("a:b/c@1.0.0")));
+        assertEquals("a:b/c@1.0.0", resolve("a:b/c@1.4.0", List.of("a:b/c@1.0.0")));
     }
 
     /** Versions compare by number, so 0.2.12 is higher than 0.2.9 although it sorts lower as text. */
@@ -112,12 +107,10 @@ public class InterfaceVersionsTests {
     public void theHighestCompatibleVersionIsChosen() {
         assertEquals(
                 "a:b/c@0.2.12",
-                InterfaceVersions.resolve(
-                        "a:b/c@0.2.0", List.of("a:b/c@0.2.9", "a:b/c@0.2.12", "a:b/c@0.2.10")));
+                resolve("a:b/c@0.2.0", List.of("a:b/c@0.2.9", "a:b/c@0.2.12", "a:b/c@0.2.10")));
         assertEquals(
                 "a:b/c@1.10.0",
-                InterfaceVersions.resolve(
-                        "a:b/c@1.0.0", List.of("a:b/c@1.9.9", "a:b/c@1.10.0", "a:b/c@1.2.30")));
+                resolve("a:b/c@1.0.0", List.of("a:b/c@1.9.9", "a:b/c@1.10.0", "a:b/c@1.2.30")));
     }
 
     @Test
@@ -127,7 +120,7 @@ public class InterfaceVersionsTests {
                 InterfaceVersions.compatibleKey("a:b/c@0.18446744073709551616.0"));
         assertEquals(
                 "a:b/c@1.18446744073709551616.0",
-                InterfaceVersions.resolve(
+                resolve(
                         "a:b/c@1.0.0",
                         List.of(
                                 "a:b/c@1.18446744073709551616.0",
@@ -138,46 +131,43 @@ public class InterfaceVersionsTests {
     public void onlyTheRequestedInterfaceIsConsidered() {
         assertEquals(
                 "a:b/c@0.2.1",
-                InterfaceVersions.resolve(
-                        "a:b/c@0.2.0", List.of("a:b/d@0.2.9", "a:b/c@0.2.1", "a:x/c@0.2.9")));
+                resolve("a:b/c@0.2.0", List.of("a:b/d@0.2.9", "a:b/c@0.2.1", "a:x/c@0.2.9")));
     }
 
     @Test
     public void anotherTrackIsRefused() {
-        assertNull(InterfaceVersions.resolve("a:b/c@0.3.0", List.of("a:b/c@0.2.12")));
-        assertNull(InterfaceVersions.resolve("a:b/c@0.2.12", List.of("a:b/c@0.3.0")));
-        assertNull(InterfaceVersions.resolve("a:b/c@2.0.0", List.of("a:b/c@1.9.0")));
-        assertNull(InterfaceVersions.resolve("a:b/c@1.0.0", List.of("a:b/c@0.1.0")));
+        assertNull(resolve("a:b/c@0.3.0", List.of("a:b/c@0.2.12")));
+        assertNull(resolve("a:b/c@0.2.12", List.of("a:b/c@0.3.0")));
+        assertNull(resolve("a:b/c@2.0.0", List.of("a:b/c@1.9.0")));
+        assertNull(resolve("a:b/c@1.0.0", List.of("a:b/c@0.1.0")));
     }
 
     @Test
     public void aZeroMajorAndMinorMatchesOnlyItself() {
-        assertNull(InterfaceVersions.resolve("a:b/c@0.0.3", List.of("a:b/c@0.0.4")));
+        assertNull(resolve("a:b/c@0.0.3", List.of("a:b/c@0.0.4")));
     }
 
     @Test
     public void aPreReleaseMatchesOnlyItself() {
-        assertNull(InterfaceVersions.resolve("a:b/c@0.2.0-rc.1", List.of("a:b/c@0.2.0")));
-        assertNull(InterfaceVersions.resolve("a:b/c@0.2.0", List.of("a:b/c@0.2.1-rc.1")));
+        assertNull(resolve("a:b/c@0.2.0-rc.1", List.of("a:b/c@0.2.0")));
+        assertNull(resolve("a:b/c@0.2.0", List.of("a:b/c@0.2.1-rc.1")));
     }
 
     @Test
     public void versionedAndUnversionedNamesNeverMatch() {
-        assertNull(InterfaceVersions.resolve("a:b/c", List.of("a:b/c@0.2.0")));
-        assertNull(InterfaceVersions.resolve("a:b/c@0.2.0", List.of("a:b/c")));
+        assertNull(resolve("a:b/c", List.of("a:b/c@0.2.0")));
+        assertNull(resolve("a:b/c@0.2.0", List.of("a:b/c")));
     }
 
     /** The key is only for matching, so a name spelled like one is not a candidate. */
     @Test
     public void aNameSpelledLikeAKeyIsNotACandidate() {
-        assertNull(InterfaceVersions.resolve("a:b/c@0.2.6", List.of("a:b/c@0.2")));
+        assertNull(resolve("a:b/c@0.2.6", List.of("a:b/c@0.2")));
     }
 
     @Test
     public void buildMetadataDoesNotPreventAMatch() {
-        assertEquals(
-                "a:b/c@1.2.3+abc",
-                InterfaceVersions.resolve("a:b/c@1.0.0", List.of("a:b/c@1.2.3+abc")));
+        assertEquals("a:b/c@1.2.3+abc", resolve("a:b/c@1.0.0", List.of("a:b/c@1.2.3+abc")));
     }
 
     @Test
@@ -186,7 +176,7 @@ public class InterfaceVersionsTests {
                 assertThrows(
                         LinkageException.class,
                         () ->
-                                InterfaceVersions.resolve(
+                                resolve(
                                         "a:b/c@1.0.0",
                                         List.of("a:b/c@1.2.3+abc", "a:b/c@1.2.3+def")));
         assertTrue(
@@ -196,9 +186,7 @@ public class InterfaceVersionsTests {
                 "expected every name involved, got: " + thrown.getMessage());
         assertThrows(
                 LinkageException.class,
-                () ->
-                        InterfaceVersions.resolve(
-                                "a:b/c@1.0.0", List.of("a:b/c@1.2.3", "a:b/c@1.2.3+abc")));
+                () -> resolve("a:b/c@1.0.0", List.of("a:b/c@1.2.3", "a:b/c@1.2.3+abc")));
     }
 
     /** Only a tie for the highest version leaves the choice open. */
@@ -206,16 +194,24 @@ public class InterfaceVersionsTests {
     public void aTieBelowTheHighestVersionIsNotAmbiguous() {
         assertEquals(
                 "a:b/c@1.3.0",
-                InterfaceVersions.resolve(
+                resolve(
                         "a:b/c@1.0.0",
                         List.of("a:b/c@1.2.3+abc", "a:b/c@1.3.0", "a:b/c@1.2.3+def")));
+        assertEquals(
+                "a:b/c@1.3.0",
+                resolve(
+                        "a:b/c@1.0.0",
+                        List.of("a:b/c@1.2.3+abc", "a:b/c@1.2.3+def", "a:b/c@1.3.0")));
     }
 
     @Test
     public void anExactNameIsNotAmbiguous() {
         assertEquals(
                 "a:b/c@1.2.3+abc",
-                InterfaceVersions.resolve(
-                        "a:b/c@1.2.3+abc", List.of("a:b/c@1.2.3+abc", "a:b/c@1.2.3+def")));
+                resolve("a:b/c@1.2.3+abc", List.of("a:b/c@1.2.3+abc", "a:b/c@1.2.3+def")));
+    }
+
+    private static String resolve(String requested, List<String> provided) {
+        return new InterfaceVersions(provided).resolve(requested);
     }
 }

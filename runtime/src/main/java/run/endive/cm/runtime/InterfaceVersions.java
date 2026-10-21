@@ -3,12 +3,14 @@ package run.endive.cm.runtime;
 import java.math.BigInteger;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Decides which versions of an interface name are compatible with each other, so that a host may
- * supply an interface at a version other than the one a component imports.
+ * The interface names a host provides, indexed so that a host may supply an interface at a
+ * version other than the one a component imports.
  *
  * <p>A pre-release, or a version below 0.1.0, is compatible only with itself. This matches {@code
  * alternate_lookup_key} in Wasmtime and is stricter than the canonical form the Explainer describes.
@@ -34,7 +36,28 @@ final class InterfaceVersions {
                     .thenComparing(version -> version.minor)
                     .thenComparing(version -> version.patch);
 
-    private InterfaceVersions() {}
+    private final Collection<String> provided;
+    private final Map<String, Version> highest = new HashMap<>();
+    private final Map<String, Version> tied = new HashMap<>();
+
+    /** Indexes {@code provided} by {@link #compatibleKey}. */
+    InterfaceVersions(Collection<String> provided) {
+        this.provided = provided;
+        for (String name : provided) {
+            Version candidate = Version.parse(name);
+            if (candidate == null) {
+                continue;
+            }
+            Version best = highest.get(candidate.key);
+            int order = best == null ? 1 : PRECEDENCE.compare(candidate, best);
+            if (order > 0) {
+                highest.put(candidate.key, candidate);
+                tied.remove(candidate.key);
+            } else if (order == 0) {
+                tied.put(candidate.key, candidate);
+            }
+        }
+    }
 
     /**
      * The name that {@code name} shares with every compatible version of itself, such as {@code
@@ -49,13 +72,13 @@ final class InterfaceVersions {
     }
 
     /**
-     * The name in {@code provided} that satisfies {@code requested}. That is {@code requested}
-     * itself when present, and otherwise the highest version sharing its {@link #compatibleKey}.
+     * The provided name that satisfies {@code requested}. That is {@code requested} itself when
+     * present, and otherwise the highest version sharing its {@link #compatibleKey}.
      *
      * @return the chosen name, or {@code null} when none qualifies
      * @throws LinkageException when the highest compatible versions differ only in build metadata
      */
-    static String resolve(String requested, Collection<String> provided) {
+    String resolve(String requested) {
         if (provided.contains(requested)) {
             return requested;
         }
@@ -63,29 +86,16 @@ final class InterfaceVersions {
         if (key == null) {
             return null;
         }
-        Version best = null;
-        Version tied = null;
-        for (String name : provided) {
-            Version candidate = Version.parse(name);
-            if (candidate == null || !candidate.key.equals(key)) {
-                continue;
-            }
-            int order = best == null ? 1 : PRECEDENCE.compare(candidate, best);
-            if (order > 0) {
-                best = candidate;
-                tied = null;
-            } else if (order == 0) {
-                tied = candidate;
-            }
-        }
-        if (tied != null) {
+        Version best = highest.get(key);
+        Version other = tied.get(key);
+        if (other != null) {
             throw new LinkageException(
                     "Import \""
                             + requested
                             + "\" is ambiguous between \""
                             + best.name
                             + "\" and \""
-                            + tied.name
+                            + other.name
                             + "\", which differ only in build metadata");
         }
         return best == null ? null : best.name;
