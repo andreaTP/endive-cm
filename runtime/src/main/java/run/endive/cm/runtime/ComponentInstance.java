@@ -1,6 +1,5 @@
 package run.endive.cm.runtime;
 
-import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
@@ -359,26 +358,52 @@ public final class ComponentInstance implements TypeResolver {
     }
 
     /**
-     * What was supplied for the import named {@code name}, keyed by the name it was supplied under,
-     * or {@code null} when nothing was. The host may supply an interface under a compatible version
-     * of the name, so at the top of a store the name is matched by {@link
-     * InterfaceVersions#resolve}. Everywhere else it is matched exactly.
+     * @throws LinkageException when nothing was supplied, or the compatible versions supplied are
+     *     ambiguous
+     * @see #suppliedName
+     */
+    Object getImport(String name) {
+        String supplied = suppliedName(name);
+        if (supplied == null) {
+            throw new LinkageException("Import \"" + name + "\" was not found");
+        }
+        return imports.get(supplied);
+    }
+
+    /**
+     * @throws LinkageException when the compatible versions supplied are ambiguous
+     * @see #suppliedName
+     */
+    boolean hasImport(String name) {
+        return suppliedName(name) != null;
+    }
+
+    /**
+     * The name under which the import {@code name} was supplied, or {@code null} when nothing was.
+     * At the host boundary the host may supply an interface under a compatible version of the name,
+     * as {@link InterfaceVersions#resolve} decides. Everywhere else the name is matched exactly.
      *
      * @throws LinkageException when the compatible versions supplied are ambiguous
      */
-    Map.Entry<String, Object> resolveImport(String name) {
-        String supplied;
-        if (parent == null) {
-            if (hostVersions == null) {
-                hostVersions = new InterfaceVersions(imports.keySet());
-            }
-            supplied = hostVersions.resolve(name);
-        } else {
-            supplied = imports.containsKey(name) ? name : null;
+    String suppliedName(String name) {
+        if (!atHostBoundary()) {
+            return imports.containsKey(name) ? name : null;
         }
-        return supplied == null
-                ? null
-                : new AbstractMap.SimpleImmutableEntry<>(supplied, imports.get(supplied));
+        if (hostVersions == null) {
+            hostVersions = new InterfaceVersions(imports.keySet());
+        }
+        return hostVersions.resolve(name);
+    }
+
+    /**
+     * Whether the values satisfying this instance's imports are arriving from the host.
+     *
+     * <p>A validator has already compared the declaration against the definition wherever a
+     * component instantiates a child it contains, so only the host boundary is checked by the
+     * linker. See {@code docs/misc.md} for why that is sound and what it requires.
+     */
+    boolean atHostBoundary() {
+        return parent == null;
     }
 
     private void seal() {

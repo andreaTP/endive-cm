@@ -229,10 +229,8 @@ public class CompatibleVersionImportTests {
         var nested = ComponentInstance.builder(store).withParent(top.instance());
         nested.addImports(supplied);
 
-        assertEquals(
-                "test:pkg/iface@0.2.12",
-                top.instance().resolveImport("test:pkg/iface@0.2.6").getKey());
-        assertNull(nested.instance().resolveImport("test:pkg/iface@0.2.6"));
+        assertEquals("test:pkg/iface@0.2.12", top.instance().suppliedName("test:pkg/iface@0.2.6"));
+        assertNull(nested.instance().suppliedName("test:pkg/iface@0.2.6"));
     }
 
     /** Links a guest that imports {@code imported} and exports {@code run}, which calls it. */
