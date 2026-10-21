@@ -82,6 +82,16 @@ class IpAddressesTest {
     }
 
     @Test
+    void aMappedAddressUnmapsToIpv4() throws UnknownHostException {
+        InetAddress mapped =
+                IpAddresses.toInet(new IpAddress.Ipv6(Tuple8.of(0, 0, 0, 0, 0, 0xffff, 0x7f00, 1)));
+
+        assertEquals(InetAddress.getByName("127.0.0.1"), IpAddresses.unmapped(mapped));
+        assertEquals(
+                InetAddress.getByName("::1"), IpAddresses.unmapped(InetAddress.getByName("::1")));
+    }
+
+    @Test
     void onlyAMappedAddressIsIpv4Mapped() throws UnknownHostException {
         assertFalse(IpAddresses.isIpv4Mapped(InetAddress.getByName("127.0.0.1")));
         assertFalse(IpAddresses.isIpv4Mapped(InetAddress.getByName("::1")));

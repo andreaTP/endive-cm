@@ -5,6 +5,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.util.Arrays;
 import run.endive.cm.runtime.Tuple4;
 import run.endive.cm.runtime.Tuple8;
 import run.endive.cm.wasi.p2.bindings.wasi.sockets.network.IpAddress;
@@ -85,6 +86,18 @@ public final class IpAddresses {
             }
         }
         return bytes[10] == (byte) 0xff && bytes[11] == (byte) 0xff;
+    }
+
+    /** The IPv4 address {@code address} maps, or {@code address} itself when it maps none. */
+    public static InetAddress unmapped(InetAddress address) {
+        if (!isIpv4Mapped(address)) {
+            return address;
+        }
+        try {
+            return InetAddress.getByAddress(Arrays.copyOfRange(address.getAddress(), 12, 16));
+        } catch (UnknownHostException e) {
+            throw new IllegalStateException("4 bytes are always an IPv4 address", e);
+        }
     }
 
     private static InetAddress ipv4Address(Tuple4<Short, Short, Short, Short> address) {

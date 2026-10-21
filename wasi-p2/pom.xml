@@ -23,7 +23,8 @@
     </dependency>
     <dependency>
       <!-- Provided so that an embedder who denies the guest network access needs no Netty at
-           runtime. Only wasi:sockets uses it. -->
+           runtime. Only wasi:sockets uses it, and WasiPreview2 checks it is present before
+           granting any access. -->
       <groupId>io.netty</groupId>
       <artifactId>netty-buffer</artifactId>
       <scope>provided</scope>
@@ -31,6 +32,16 @@
     <dependency>
       <groupId>io.netty</groupId>
       <artifactId>netty-common</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-resolver</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-resolver-dns</artifactId>
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -91,6 +102,36 @@
             <goals>
               <goal>test-jar</goal>
             </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-test</id>
+            <configuration>
+              <excludes>
+                <exclude>**/WithoutNettyTest.java</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+          <execution>
+            <!-- Netty is provided, so an embedder denying the guest network access may leave it
+                 out. This runs the test proving that works with Netty off the class path. -->
+            <id>without-netty</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>**/WithoutNettyTest.java</include>
+              </includes>
+              <classpathDependencyExcludes>
+                <classpathDependencyExclude>io.netty:*</classpathDependencyExclude>
+              </classpathDependencyExcludes>
+            </configuration>
           </execution>
         </executions>
       </plugin>

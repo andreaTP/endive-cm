@@ -3,8 +3,14 @@ package run.endive.cm.wasi.p2;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Promise;
@@ -27,8 +33,10 @@ import run.endive.cm.wasi.p2.bindings.wasi.filesystem.types.PathFlags;
 import run.endive.cm.wasi.p2.bindings.wasi.io.poll.Pollable;
 import run.endive.cm.wasi.p2.bindings.wasi.io.streams.InputStream;
 import run.endive.cm.wasi.p2.bindings.wasi.io.streams.OutputStream;
+import run.endive.cm.wasi.p2.sockets.NetworkPolicy;
+import run.endive.cm.wasi.p2.sockets.network.HostNetwork;
 
-/** An embedder already running Netty plugs its event loop and futures in without adapters of ours. */
+/** An embedder already running Netty plugs its event loops and futures in without adapters of ours. */
 class NettySwapInTest {
 
     private EventExecutor eventLoop;
@@ -96,5 +104,58 @@ class NettySwapInTest {
             assertArrayEquals(
                     "hello".getBytes(UTF_8), Files.readAllBytes(fs.getPath("/data/file.txt")));
         }
+    }
+
+    @Test
+    void aGuestGrantedTheNetworkRunsTimersOnTheGivenEventLoopGroup() {
+        EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        try {
+            try (var wasi =
+                    WasiPreview2.builder()
+                            .withScheduler(group)
+                            .withNetworkPolicy(NetworkPolicy.allowAll())
+                            .build()) {
+                Pollable timeout =
+                        wasi.monotonicClock().subscribeDuration(BigInteger.valueOf(1_000_000));
+
+                assertEquals(List.of(0L), wasi.poll().poll(List.of(timeout)));
+            }
+            assertFalse(group.isShuttingDown());
+        } finally {
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void theGuestIsGrantedTheNetworkPolicyGiven() {
+        NetworkPolicy policy = NetworkPolicy.allowAll();
+        EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        try (var wasi =
+                WasiPreview2.builder().withScheduler(group).withNetworkPolicy(policy).build()) {
+            HostNetwork network = HostNetwork.of(wasi.instanceNetwork().instanceNetwork());
+
+            assertSame(policy, network.policy());
+        } finally {
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void grantingTheNetworkNeedsTheEmbeddersEventLoopGroup() {
+        var builder = WasiPreview2.builder().withNetworkPolicy(NetworkPolicy.allowAll());
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
+
+        assertTrue(e.getMessage().contains("NioIoHandler"), e.getMessage());
+    }
+
+    @Test
+    void grantingTheNetworkNeedsANettyScheduler() {
+        var builder =
+                WasiPreview2.builder()
+                        .withScheduler(eventLoop)
+                        .withNetworkPolicy(NetworkPolicy.allowAll());
+
+        assertThrows(IllegalArgumentException.class, builder::build);
     }
 }

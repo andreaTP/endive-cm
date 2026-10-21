@@ -24,11 +24,12 @@ import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.cm.wasi.p2.random.insecure.HostInsecure;
 import run.endive.cm.wasi.p2.random.insecureseed.HostInsecureSeed;
 import run.endive.cm.wasi.p2.random.random.HostRandom;
+import run.endive.cm.wasi.p2.sockets.HostSockets;
+import run.endive.cm.wasi.p2.sockets.HostSocketsFactory;
 import run.endive.cm.wasi.p2.sockets.NetworkPolicy;
+import run.endive.cm.wasi.p2.sockets.Transport;
 import run.endive.cm.wasi.p2.sockets.instancenetwork.HostInstanceNetwork;
-import run.endive.cm.wasi.p2.sockets.ipnamelookup.HostIpNameLookup;
-import run.endive.cm.wasi.p2.sockets.tcpcreatesocket.HostTcpCreateSocket;
-import run.endive.cm.wasi.p2.sockets.udpcreatesocket.HostUdpCreateSocket;
+import run.endive.cm.wasi.p2.sockets.netty.NettyTransport;
 
 /**
  * The WASI preview 2 interfaces this host implements, ready to satisfy a component's imports.
@@ -47,6 +48,7 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     private final ScheduledExecutorService scheduler;
     private final boolean ownsScheduler;
     private final HostPoll poll;
+    private final HostSockets sockets;
     private final HostMonotonicClock monotonicClock;
     private final HostWallClock wallClock;
     private final HostTypes types;
@@ -56,14 +58,19 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     private final HostInsecure insecure;
     private final HostInsecureSeed insecureSeed;
     private final HostInstanceNetwork instanceNetwork;
-    private final HostIpNameLookup ipNameLookup;
-    private final HostTcpCreateSocket tcpCreateSocket;
-    private final HostUdpCreateSocket udpCreateSocket;
 
     private WasiPreview2(Builder builder) {
         this.ownsScheduler = builder.scheduler == null;
         this.scheduler = ownsScheduler ? defaultScheduler() : builder.scheduler;
         this.poll = new HostPoll();
+        try {
+            this.sockets =
+                    HostSocketsFactory.create(
+                            builder.networkPolicy, poll, scheduler, builder.transport);
+        } catch (RuntimeException e) {
+            close(scheduler, ownsScheduler);
+            throw e;
+        }
         this.monotonicClock = new HostMonotonicClock(scheduler, poll);
         this.wallClock =
                 builder.clock == null
@@ -79,9 +86,6 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         this.insecureSeed =
                 builder.insecureSeed == null ? new HostInsecureSeed() : builder.insecureSeed;
         this.instanceNetwork = new HostInstanceNetwork(builder.networkPolicy);
-        this.ipNameLookup = new HostIpNameLookup();
-        this.tcpCreateSocket = new HostTcpCreateSocket();
-        this.udpCreateSocket = new HostUdpCreateSocket();
     }
 
     public static Builder builder() {
@@ -139,28 +143,33 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     }
 
     @Override
-    public HostIpNameLookup ipNameLookup() {
-        return ipNameLookup;
+    public run.endive.cm.wasi.p2.bindings.wasi.sockets.ipnamelookup.Host ipNameLookup() {
+        return sockets.ipNameLookup();
     }
 
     @Override
-    public HostTcpCreateSocket tcpCreateSocket() {
-        return tcpCreateSocket;
+    public run.endive.cm.wasi.p2.bindings.wasi.sockets.tcpcreatesocket.Host tcpCreateSocket() {
+        return sockets.tcpCreateSocket();
     }
 
     @Override
-    public HostUdpCreateSocket udpCreateSocket() {
-        return udpCreateSocket;
+    public run.endive.cm.wasi.p2.bindings.wasi.sockets.udpcreatesocket.Host udpCreateSocket() {
+        return sockets.udpCreateSocket();
     }
 
     /**
-     * Closes every file a guest left open, and shuts down the scheduler unless the builder was
-     * given an external one to use.
+     * Closes every file a guest left open and what the network created, then shuts down the
+     * scheduler. Anything the builder was given stays open.
      */
     @Override
     public void close() {
         files.close();
-        if (ownsScheduler) {
+        sockets.close();
+        close(scheduler, ownsScheduler);
+    }
+
+    private static void close(ScheduledExecutorService scheduler, boolean owned) {
+        if (owned) {
             scheduler.shutdownNow();
         }
     }
@@ -189,15 +198,19 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         private Random insecureRandom;
         private HostInsecureSeed insecureSeed;
         private NetworkPolicy networkPolicy = NetworkPolicy.denyAll();
+        private Transport transport;
 
         private Builder() {}
 
         /**
-         * The executor that runs timers, such as those behind {@code wasi:clocks} subscriptions.
-         * Any {@link ScheduledExecutorService} works, including an event loop the embedder already
-         * runs. A guest must never run on its threads, since a blocked guest would hold up the
-         * timers it waits for. By default, one is created and then shut down on {@link #close()}.
-         * When set by the embedder, it is their responsibility to shut it down.
+         * The executor that runs timers, such as those behind {@code wasi:clocks} subscriptions,
+         * and the network. Any {@link ScheduledExecutorService} works while the guest is denied the
+         * network. Granting it network access needs a Netty event loop group running NIO channels,
+         * such as a {@code MultiThreadIoEventLoopGroup} created with {@code
+         * NioIoHandler.newFactory()}. A guest must never run on its threads, since a blocked guest
+         * would hold up the timers and sockets it waits for. By default, one that cannot run the
+         * network is created and then shut down on {@link #close()}. When set by the embedder, it
+         * is their responsibility to shut it down.
          */
         public Builder withScheduler(ScheduledExecutorService scheduler) {
             this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -289,10 +302,20 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
 
         /**
          * What the guest may do on the network through {@code wasi:sockets}. By default, it may do
-         * nothing.
+         * nothing. Granting it anything needs Netty on the class path, as {@link NettyTransport}
+         * describes, and a scheduler from Netty, as {@link #withScheduler} describes.
          */
         public Builder withNetworkPolicy(NetworkPolicy policy) {
             this.networkPolicy = Objects.requireNonNull(policy, "policy");
+            return this;
+        }
+
+        /**
+         * What the network uses beyond the scheduler, such as a {@link NettyTransport}. It is used
+         * only when the network policy grants the guest something.
+         */
+        public Builder withTransport(Transport transport) {
+            this.transport = Objects.requireNonNull(transport, "transport");
             return this;
         }
 
