@@ -285,26 +285,45 @@ public final class ComponentLinker {
 
     private void processImportSection(ComponentInstance.Builder builder, ImportSection section) {
         for (Import imp : section.imports()) {
-            switch (imp.externDesc().kind()) {
-                case TYPE:
-                    processTypeImport(builder, imp);
-                    break;
-                case CORE_MODULE:
-                    processCoreModuleImport(builder, imp);
-                    break;
-                case INSTANCE:
-                    processInstanceImport(builder, imp);
-                    break;
-                case COMPONENT:
-                    processComponentImport(builder, imp);
-                    break;
-                case FUNC:
-                    processFunctionImport(builder, imp);
-                    break;
-                default:
-                    throw new LinkageException(
-                            "Import type " + imp.externDesc().kind() + " not supported yet");
+            String supplied = builder.instance().suppliedName(imp.name());
+            try {
+                processImport(builder, imp);
+            } catch (LinkageException e) {
+                if (supplied == null || supplied.equals(imp.name())) {
+                    throw e;
+                }
+                throw new LinkageException(
+                        "Import \""
+                                + imp.name()
+                                + "\" resolved to compatible \""
+                                + supplied
+                                + "\" - "
+                                + e.getMessage(),
+                        e);
             }
+        }
+    }
+
+    private void processImport(ComponentInstance.Builder builder, Import imp) {
+        switch (imp.externDesc().kind()) {
+            case TYPE:
+                processTypeImport(builder, imp);
+                break;
+            case CORE_MODULE:
+                processCoreModuleImport(builder, imp);
+                break;
+            case INSTANCE:
+                processInstanceImport(builder, imp);
+                break;
+            case COMPONENT:
+                processComponentImport(builder, imp);
+                break;
+            case FUNC:
+                processFunctionImport(builder, imp);
+                break;
+            default:
+                throw new LinkageException(
+                        "Import type " + imp.externDesc().kind() + " not supported yet");
         }
     }
 
@@ -771,7 +790,7 @@ public final class ComponentLinker {
         var moduleImport =
                 requireImportSort(
                         imp, builder.instance().getImport(imp.name()), WasmModule.class, "module");
-        if (atHostBoundary(builder)) {
+        if (builder.instance().atHostBoundary()) {
             // The module came from the embedder, so the declared type is the only statement of
             // what it has to be.
             CoreModuleMatcher.requireSubtype(coreType.moduleType(), moduleImport);
@@ -809,7 +828,7 @@ public final class ComponentLinker {
         }
         // Handle indices and resource identities are store-relative.
         builder.instance().store().requireOwns(instanceImport);
-        if (atHostBoundary(builder)) {
+        if (builder.instance().atHostBoundary()) {
             matchInstanceType(builder.instance(), imp, type.instanceType(), instanceImport);
         }
         builder.addChildInstance(instanceImport);
@@ -833,7 +852,7 @@ public final class ComponentLinker {
             }
             ComponentClosure closure =
                     requireImportSort(imp, componentImport, ComponentClosure.class, "component");
-            if (builder.instance().parent() == null) {
+            if (builder.instance().atHostBoundary()) {
                 // Unreachable while Validator refuses root level component imports, and kept so
                 // that lifting that restriction does not open an unchecked boundary. See
                 // docs/misc.md.
@@ -868,7 +887,7 @@ public final class ComponentLinker {
                             builder.instance().getImport(imp.name()),
                             ComponentFunction.class,
                             "function");
-            if (atHostBoundary(builder)) {
+            if (builder.instance().atHostBoundary()) {
                 // An embedder-supplied function has no parameter names of its own to compare.
                 var slot = builder.instance().slotAt((int) imp.externDesc().typeIdx());
                 if (!TypeMatcher.funcTypesMatch(
@@ -1321,17 +1340,6 @@ public final class ComponentLinker {
                             + sortOf(value));
         }
         return type.cast(value);
-    }
-
-    /**
-     * Whether the values satisfying this instantiation's imports are arriving from the host.
-     *
-     * <p>A validator has already compared the declaration against the definition wherever a
-     * component instantiates a child it contains, so only the host boundary is checked here. See
-     * {@code docs/misc.md} for why that is sound and what it requires.
-     */
-    private static boolean atHostBoundary(ComponentInstance.Builder builder) {
-        return builder.instance().parent() == null;
     }
 
     /**

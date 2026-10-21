@@ -65,6 +65,7 @@ public final class ComponentInstance implements TypeResolver {
 
     private final Map<String, Object> exports = new LinkedHashMap<>();
     private final Map<String, Object> imports = new LinkedHashMap<>();
+    private InterfaceVersions hostVersions;
 
     private final Table handles = new Table();
     private boolean mayEnter;
@@ -356,15 +357,53 @@ public final class ComponentInstance implements TypeResolver {
         return exports.containsKey(name);
     }
 
+    /**
+     * @throws LinkageException when nothing was supplied, or the compatible versions supplied are
+     *     ambiguous
+     * @see #suppliedName
+     */
     Object getImport(String name) {
-        if (!imports.containsKey(name)) {
+        String supplied = suppliedName(name);
+        if (supplied == null) {
             throw new LinkageException("Import \"" + name + "\" was not found");
         }
-        return imports.get(name);
+        return imports.get(supplied);
     }
 
+    /**
+     * @throws LinkageException when the compatible versions supplied are ambiguous
+     * @see #suppliedName
+     */
     boolean hasImport(String name) {
-        return imports.containsKey(name);
+        return suppliedName(name) != null;
+    }
+
+    /**
+     * The name under which the import {@code name} was supplied, or {@code null} when nothing was.
+     * At the host boundary the host may supply an interface under a compatible version of the name,
+     * as {@link InterfaceVersions#resolve} decides. Everywhere else the name is matched exactly.
+     *
+     * @throws LinkageException when the compatible versions supplied are ambiguous
+     */
+    String suppliedName(String name) {
+        if (!atHostBoundary()) {
+            return imports.containsKey(name) ? name : null;
+        }
+        if (hostVersions == null) {
+            hostVersions = new InterfaceVersions(imports.keySet());
+        }
+        return hostVersions.resolve(name);
+    }
+
+    /**
+     * Whether the values satisfying this instance's imports are arriving from the host.
+     *
+     * <p>A validator has already compared the declaration against the definition wherever a
+     * component instantiates a child it contains, so only the host boundary is checked by the
+     * linker. See {@code docs/misc.md} for why that is sound and what it requires.
+     */
+    boolean atHostBoundary() {
+        return parent == null;
     }
 
     private void seal() {
@@ -549,11 +588,13 @@ public final class ComponentInstance implements TypeResolver {
 
         Builder addImport(String name, Object value) {
             instance().imports.put(name, value);
+            instance().hostVersions = null;
             return this;
         }
 
         Builder addImports(Map<String, Object> imports) {
             instance().imports.putAll(imports);
+            instance().hostVersions = null;
             return this;
         }
 
