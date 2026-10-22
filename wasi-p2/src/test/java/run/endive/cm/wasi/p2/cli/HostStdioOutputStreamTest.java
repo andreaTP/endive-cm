@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.PrintStream;
 import java.math.BigInteger;
 import org.junit.jupiter.api.Test;
 import run.endive.cm.wasi.p2.bindings.wasi.io.streams.StreamError;
@@ -60,6 +61,31 @@ class HostStdioOutputStreamTest {
                                 throw new IOException("disk full");
                             }
                         });
+        failing.checkWrite();
+
+        StreamErrorException e =
+                assertThrows(StreamErrorException.class, () -> failing.write(bytes("x")));
+        assertInstanceOf(StreamError.LastOperationFailed.class, e.error());
+        StreamErrorException again = assertThrows(StreamErrorException.class, failing::checkWrite);
+        assertInstanceOf(StreamError.Closed.class, again.error());
+    }
+
+    /**
+     * {@link System#out} is a {@link PrintStream}, which keeps a failure such as a broken pipe to
+     * itself, so the guest still has to hear of it.
+     */
+    @Test
+    void aPrintStreamsFailureFailsTheStream() {
+        HostStdioOutputStream failing =
+                new HostStdioOutputStream(
+                        poll,
+                        new PrintStream(
+                                new OutputStream() {
+                                    @Override
+                                    public void write(int b) throws IOException {
+                                        throw new IOException("Broken pipe");
+                                    }
+                                }));
         failing.checkWrite();
 
         StreamErrorException e =

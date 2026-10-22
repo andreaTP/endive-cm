@@ -2,6 +2,7 @@ package run.endive.cm.wasi.p2.cli;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.concurrent.CompletableFuture;
 import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.cm.wasi.p2.io.streams.HostOutputStream;
@@ -47,6 +48,7 @@ public final class HostStdioOutputStream extends HostOutputStream {
         checkOpen();
         try {
             sink.write(contents);
+            checkSink();
         } catch (IOException e) {
             closed = true;
             throw StreamErrors.failed(e);
@@ -58,9 +60,17 @@ public final class HostStdioOutputStream extends HostOutputStream {
         checkOpen();
         try {
             sink.flush();
+            checkSink();
         } catch (IOException e) {
             closed = true;
             throw StreamErrors.failed(e);
+        }
+    }
+
+    /** A {@link PrintStream}, such as {@link System#out}, records a failure instead of throwing it. */
+    private void checkSink() throws IOException {
+        if (sink instanceof PrintStream && ((PrintStream) sink).checkError()) {
+            throw new IOException("the print stream reports an error");
         }
     }
 
