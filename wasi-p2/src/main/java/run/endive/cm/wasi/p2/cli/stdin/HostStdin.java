@@ -10,14 +10,14 @@ import run.endive.cm.wasi.p2.io.streams.HostInputStream;
  * The host side of {@code wasi:cli/stdin}, which hands the guest what an embedder's Java stream
  * holds.
  *
- * <p>A daemon thread starts reading the Java stream the first time the guest asks for stdin. It
- * pauses while the guest leaves {@value #CAPACITY} bytes unread, and stops once the Java stream
- * ends or fails, which the guest sees after reading everything before it. Every handle the guest is
- * given reads the same bytes, so dropping one leaves the others usable. The Java stream is never
- * closed.
+ * <p>A daemon thread starts reading the Java stream the first time the guest reads or polls stdin,
+ * so a guest that only asks for it reads nothing. It pauses while the guest leaves {@value
+ * #CAPACITY} bytes unread, and stops once the Java stream ends or fails, which the guest sees after
+ * reading everything before it. Every handle the guest is given reads the same bytes, so dropping
+ * one leaves the others usable. The Java stream is never closed.
  *
- * <p>Hosts given the same Java stream share that thread, and the one that asked for stdin most
- * recently gets what it reads. A read cannot be interrupted, so what one returns after its host
+ * <p>Hosts given the same Java stream share that thread, and the one that read or polled stdin
+ * most recently gets what it reads. A read cannot be interrupted, so what one returns after its host
  * closes goes to the next host given the stream. Bytes a guest left unread are dropped with its
  * host, as buffered stdio drops what it read ahead.
  *
@@ -47,7 +47,7 @@ public final class HostStdin implements Host, AutoCloseable {
 
     @Override
     public HostInputStream getStdin() {
-        return new StdinHandle(poll, buffer());
+        return new StdinHandle(poll, this::buffer);
     }
 
     /**

@@ -44,6 +44,25 @@ class HostStdinTest {
         }
     }
 
+    /** A guest asks for stdin before any other operation, so only a read or a poll reads it. */
+    @Test
+    void askingForStdinReadsNothingUntilTheGuestReadsOrPolls() {
+        Feed feed = new Feed();
+        Set<Thread> before = readers();
+
+        try (HostStdin stdin = new HostStdin(poll, feed)) {
+            InputStream stream = stdin.getStdin();
+            assertTrue(before.containsAll(readers()));
+
+            stream.subscribe().ready();
+            Set<Thread> started = readers();
+            started.removeAll(before);
+            assertEquals(1, started.size());
+        } finally {
+            feed.end();
+        }
+    }
+
     @Test
     void withoutAJavaStreamStdinIsClosedAndNothingReadsIt() {
         Set<Thread> before = readers();
@@ -92,6 +111,7 @@ class HostStdinTest {
 
         try (HostStdin stdin = new HostStdin(poll, source)) {
             InputStream stream = stdin.getStdin();
+            stream.subscribe().ready();
             awaitServed(source, HostStdin.CAPACITY);
             Thread.sleep(50);
             assertEquals(HostStdin.CAPACITY, source.served.get());
@@ -139,6 +159,7 @@ class HostStdinTest {
         HostStdin stdin = new HostStdin(poll, feed);
         Set<Thread> before = readers();
         InputStream stream = stdin.getStdin();
+        stream.subscribe().ready();
         Set<Thread> started = readers();
         started.removeAll(before);
         assertEquals(1, started.size());
@@ -161,12 +182,13 @@ class HostStdinTest {
         Set<Thread> before = readers();
         try {
             HostStdin first = new HostStdin(poll, feed);
-            first.getStdin();
+            first.getStdin().subscribe().ready();
             feed.awaitBlockedRead();
             first.close();
 
             try (HostStdin second = new HostStdin(poll, feed)) {
                 InputStream stream = second.getStdin();
+                stream.subscribe().ready();
                 Set<Thread> started = readers();
                 started.removeAll(before);
                 assertEquals(1, started.size());
@@ -188,7 +210,7 @@ class HostStdinTest {
         Feed feed = new Feed();
         Set<Thread> before = readers();
         HostStdin first = new HostStdin(poll, feed);
-        first.getStdin();
+        first.getStdin().subscribe().ready();
         feed.awaitBlockedRead();
         Set<Thread> started = readers();
         started.removeAll(before);
