@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,6 +20,7 @@ import java.util.stream.Collectors;
 import run.endive.cm.abi.VariantValue;
 import run.endive.cm.runtime.ComponentInstance;
 import run.endive.cm.runtime.ComponentStore;
+import run.endive.cm.runtime.InterfaceVersions;
 import run.endive.cm.types.WasmComponent;
 import run.endive.cm.wasi.p2.bindings.ImportsWorld;
 import run.endive.cm.wasi.p2.cli.WasiExitException;
@@ -60,8 +62,8 @@ import run.endive.cm.wasi.p2.sockets.netty.NettyNameResolver;
  */
 public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
 
-    /** The prefix naming every 0.2 version of {@code wasi:cli/run}. */
-    private static final String CLI_RUN = "wasi:cli/run@0.2.";
+    /** The key every compatible 0.2 version of {@code wasi:cli/run} shares. */
+    private static final String CLI_RUN = "wasi:cli/run@0.2";
 
     private final ScheduledExecutorService scheduler;
     private final boolean ownsScheduler;
@@ -151,21 +153,30 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     public int run(ComponentStore store, WasmComponent component) {
         try {
             ComponentInstance instance = instantiate(store, component).instance();
-            List<String> runs =
-                    instance.exportNames().stream()
-                            .filter(name -> name.startsWith(CLI_RUN))
-                            .collect(Collectors.toList());
-            if (runs.size() != 1) {
-                throw new IllegalArgumentException(
-                        "the component exports "
-                                + instance.exportNames()
-                                + " rather than one wasi:cli/run");
-            }
-            Object[] status = instance.exportedInstance(runs.get(0)).export("run").apply();
+            Object[] status =
+                    instance.exportedInstance(cliRun(instance.exportNames())).export("run").apply();
             return "ok".equals(((VariantValue) status[0]).label()) ? 0 : 1;
         } catch (WasiExitException e) {
             return e.exitCode();
         }
+    }
+
+    /**
+     * The one name among {@code exportNames} compatible with {@code wasi:cli/run@0.2}, as {@link
+     * InterfaceVersions} decides for the interfaces a component imports.
+     *
+     * @throws IllegalArgumentException when there is none, or more than one
+     */
+    static String cliRun(Collection<String> exportNames) {
+        List<String> runs =
+                exportNames.stream()
+                        .filter(name -> CLI_RUN.equals(InterfaceVersions.compatibleKey(name)))
+                        .collect(Collectors.toList());
+        if (runs.size() != 1) {
+            throw new IllegalArgumentException(
+                    "the component exports " + exportNames + " rather than one wasi:cli/run");
+        }
+        return runs.get(0);
     }
 
     @Override

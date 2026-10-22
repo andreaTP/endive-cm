@@ -221,4 +221,28 @@ class WasiPreview2Test {
         }
         assertEquals("out err", written.toString(UTF_8));
     }
+
+    /** A command runs through any compatible 0.2 release of wasi:cli/run, as imports link. */
+    @Test
+    void theRunExportedIsTheOneCompatibleWithWasiCliRun() {
+        assertEquals(
+                "wasi:cli/run@0.2.12",
+                WasiPreview2.cliRun(List.of("wasi:cli/environment@0.2.12", "wasi:cli/run@0.2.12")));
+        assertEquals("wasi:cli/run@0.2.0", WasiPreview2.cliRun(List.of("wasi:cli/run@0.2.0")));
+    }
+
+    @Test
+    void anIncompatibleOrRepeatedRunIsRefused() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WasiPreview2.cliRun(List.of("wasi:cli/run@0.2.0-rc.1")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WasiPreview2.cliRun(List.of("wasi:cli/run@0.3.0")));
+        assertThrows(
+                IllegalArgumentException.class, () -> WasiPreview2.cliRun(List.of("wasi:cli/run")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WasiPreview2.cliRun(List.of("wasi:cli/run@0.2.6", "wasi:cli/run@0.2.12")));
+    }
 }
