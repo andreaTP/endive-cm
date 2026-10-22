@@ -490,7 +490,12 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
 
         /**
          * Connects the guest to {@link System#in}, {@link System#out} and {@link System#err}, which
-         * count as terminals when the JVM has a {@link System#console() console}.
+         * count as terminals when the JVM has a {@link System#console() console}. The JDK gives one
+         * only when both stdin and stdout are terminals, so a redirected stderr still counts as one.
+         * JDK 22 to 24 give one even when the streams are redirected, unless the JVM runs with
+         * {@code -Djdk.console=java.base}. Calling {@link #withStdin(InputStream, boolean)}, {@link
+         * #withStdout(OutputStream, boolean)} or {@link #withStderr(OutputStream, boolean)}
+         * afterwards decides for that stream instead.
          */
         public Builder inheritSystemStreams() {
             boolean tty = System.console() != null;
