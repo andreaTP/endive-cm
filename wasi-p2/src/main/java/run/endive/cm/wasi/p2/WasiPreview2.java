@@ -426,7 +426,11 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
             return this;
         }
 
-        /** The arguments {@code wasi:cli/environment} hands the guest, which are none by default. */
+        /**
+         * The arguments {@code wasi:cli/environment} hands the guest, which are none by default. A
+         * program expects its own name first, as a shell passes it, so the arguments of a Java
+         * {@code main} need one in front.
+         */
         public Builder withArguments(List<String> arguments) {
             this.arguments = List.copyOf(arguments);
             return this;
