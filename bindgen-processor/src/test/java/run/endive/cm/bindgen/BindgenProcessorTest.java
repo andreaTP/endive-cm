@@ -532,6 +532,55 @@ class BindgenProcessorTest {
                 .doesNotContain("used.tcp.ErrorCodeException");
     }
 
+    /**
+     * A used error payload is thrown by the interface returning it and carried as a value by the
+     * interface taking it, which generates no exception of its own.
+     */
+    @Test
+    void aUsedErrorPayloadIsThrownWhereReturnedAndAValueElsewhere() {
+        Compilation compilation =
+                compile(
+                        JavaFileObjects.forSourceString(
+                                "endive.testing.SharedErrorHost",
+                                "package endive.testing;\n"
+                                        + "import run.endive.cm.runtime.Bindgen;\n"
+                                        + "@Bindgen(world = \"shared-error\", inline ="
+                                        + " \"package example:shared;\\n"
+                                        + "interface network {\\n"
+                                        + "  enum error-code { refused, timeout }\\n"
+                                        + "}\\n"
+                                        + "interface tcp {\\n"
+                                        + "  use network.{error-code};\\n"
+                                        + "  connect: func() -> result<u32, error-code>;\\n"
+                                        + "}\\n"
+                                        + "interface udp {\\n"
+                                        + "  use network.{error-code};\\n"
+                                        + "  report: func(outcome: result<_, error-code>);\\n"
+                                        + "}\\n"
+                                        + "world shared-error {\\n"
+                                        + "  import tcp;\\n"
+                                        + "  import udp;\\n"
+                                        + "  export go: func();\\n"
+                                        + "}\\n\")\n"
+                                        + "public class SharedErrorHost {}\n"));
+
+        assertThat(compilation).succeededWithoutWarnings();
+        assertGenerated(
+                compilation,
+                List.of(
+                        "endive.testing.SharedErrorWorld",
+                        "endive.testing.example.shared.network.ErrorCode",
+                        "endive.testing.example.shared.network.ErrorCodeException",
+                        "endive.testing.example.shared.tcp.Host",
+                        "endive.testing.example.shared.udp.Host"));
+        assertThat(compilation)
+                .generatedSourceFile("endive.testing.example.shared.udp.Host")
+                .contentsAsUtf8String()
+                .contains(
+                        "void report(Result<Void, endive.testing.example.shared.network.ErrorCode>"
+                                + " outcome);");
+    }
+
     /** Only the host side of a used type is generated so far. */
     @Test
     void anExportedInterfaceUsingTypesIsRefused() {
