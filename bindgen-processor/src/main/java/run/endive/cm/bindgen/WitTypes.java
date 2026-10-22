@@ -155,17 +155,42 @@ final class WitTypes {
      * it falls back to the interface and the type's index instead.
      */
     static String exceptionName(WitScope scope, int index) {
-        ValType error = ((ResultType) definedAt(scope, index)).error();
-        String named =
-                error == null || error.primValType() != null ? null : scope.nameAt(error.typeIdx());
+        String named = errorName(scope, index);
         return named != null
                 ? Names.type(named) + "Exception"
                 : Names.type(scope.owner()) + "Result" + index + "Exception";
     }
 
+    /**
+     * The space whose package holds the exception generated for the result at {@code index}.
+     *
+     * <p>An exception named after its error payload lives with that payload, so every interface
+     * using the payload throws one Java type.
+     */
+    static WitScope exceptionScope(WitScope scope, int index) {
+        if (errorName(scope, index) == null) {
+            return scope;
+        }
+        ValType error = ((ResultType) definedAt(scope, index)).error();
+        return scope.declaringScope(error.typeIdx());
+    }
+
     /** The exception generated for the result at {@code index}, as this unit has to write it. */
     ClassOrInterfaceType exceptionType(WitScope scope, int index) {
-        return AstBuilders.type(qualify(scope, exceptionName(scope, index)));
+        return AstBuilders.type(qualify(exceptionScope(scope, index), exceptionName(scope, index)));
+    }
+
+    /**
+     * The WIT name of the error payload of the result at {@code index}, as the interface declaring
+     * the payload gives it, or {@code null} when the payload has no name.
+     */
+    static String errorName(WitScope scope, int index) {
+        ValType error = ((ResultType) definedAt(scope, index)).error();
+        if (error == null || error.primValType() != null) {
+            return null;
+        }
+        int typeIdx = error.typeIdx();
+        return scope.declaringScope(typeIdx).nameAt(scope.declaringIndex(typeIdx));
     }
 
     /**

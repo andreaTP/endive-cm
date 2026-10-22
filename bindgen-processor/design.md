@@ -286,7 +286,10 @@ An exception is named after the error payload's type when that type has a name, 
 `ParseErrorException`. An anonymous result type is shared by every function with the same signature, so it cannot be
 named after a function, and it falls back to the interface and the type's index in the scope, giving
 `RunningResult6Exception`. Two results sharing an error payload share the exception named after it, since the exception
-carries the payload and nothing else. A `variant` becomes case subclasses rather than a visitor because an `instanceof`
+carries the payload and nothing else. That holds across interfaces too. An exception named after a payload is generated
+once, in the package of the interface declaring the payload, so every interface using it throws one Java type.
+`wasi:sockets` is what needed this, since five of its interfaces return a `result` carrying the `error-code` that
+`network` declares. A `variant` becomes case subclasses rather than a visitor because an `instanceof`
 test allocates nothing, and because the same generated classes become `sealed` once the Java baseline allows it.
 
 ### Type metadata is generated as builder code

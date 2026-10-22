@@ -2,6 +2,7 @@ package run.endive.cm.wasi.p2;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.roastedroot.zerofs.Configuration;
@@ -22,6 +23,11 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import run.endive.cm.runtime.Tuple2;
 import run.endive.cm.wasi.p2.bindings.wasi.clocks.wallclock.Datetime;
+import run.endive.cm.wasi.p2.bindings.wasi.sockets.network.ErrorCode;
+import run.endive.cm.wasi.p2.bindings.wasi.sockets.network.ErrorCodeException;
+import run.endive.cm.wasi.p2.bindings.wasi.sockets.network.IpAddressFamily;
+import run.endive.cm.wasi.p2.sockets.NetworkPolicy;
+import run.endive.cm.wasi.p2.sockets.network.HostNetwork;
 
 class WasiPreview2Test {
 
@@ -95,6 +101,32 @@ class WasiPreview2Test {
     void noDirectoryIsPreopenedByDefault() {
         try (var wasi = WasiPreview2.builder().build()) {
             assertEquals(List.of(), wasi.preopens().getDirectories());
+        }
+    }
+
+    @Test
+    void theGuestIsDeniedTheNetworkByDefault() {
+        try (var wasi = WasiPreview2.builder().build()) {
+            HostNetwork network = HostNetwork.of(wasi.instanceNetwork().instanceNetwork());
+
+            assertSame(NetworkPolicy.denyAll(), network.policy());
+        }
+    }
+
+    @Test
+    void aGuestDeniedTheNetworkCannotCreateSockets() {
+        try (var wasi = WasiPreview2.builder().build()) {
+            ErrorCodeException tcp =
+                    assertThrows(
+                            ErrorCodeException.class,
+                            () -> wasi.tcpCreateSocket().createTcpSocket(IpAddressFamily.IPV4));
+            ErrorCodeException udp =
+                    assertThrows(
+                            ErrorCodeException.class,
+                            () -> wasi.udpCreateSocket().createUdpSocket(IpAddressFamily.IPV4));
+
+            assertEquals(ErrorCode.ACCESS_DENIED, tcp.error());
+            assertEquals(ErrorCode.ACCESS_DENIED, udp.error());
         }
     }
 }

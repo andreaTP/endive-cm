@@ -24,6 +24,12 @@ import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.cm.wasi.p2.random.insecure.HostInsecure;
 import run.endive.cm.wasi.p2.random.insecureseed.HostInsecureSeed;
 import run.endive.cm.wasi.p2.random.random.HostRandom;
+import run.endive.cm.wasi.p2.sockets.HostSockets;
+import run.endive.cm.wasi.p2.sockets.HostSocketsFactory;
+import run.endive.cm.wasi.p2.sockets.NameResolver;
+import run.endive.cm.wasi.p2.sockets.NetworkPolicy;
+import run.endive.cm.wasi.p2.sockets.instancenetwork.HostInstanceNetwork;
+import run.endive.cm.wasi.p2.sockets.netty.NettyNameResolver;
 
 /**
  * The WASI preview 2 interfaces this host implements, ready to satisfy a component's imports.
@@ -42,6 +48,7 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     private final ScheduledExecutorService scheduler;
     private final boolean ownsScheduler;
     private final HostPoll poll;
+    private final HostSockets sockets;
     private final HostMonotonicClock monotonicClock;
     private final HostWallClock wallClock;
     private final HostTypes types;
@@ -50,25 +57,42 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
     private final HostRandom random;
     private final HostInsecure insecure;
     private final HostInsecureSeed insecureSeed;
+    private final HostInstanceNetwork instanceNetwork;
 
     private WasiPreview2(Builder builder) {
-        this.ownsScheduler = builder.scheduler == null;
-        this.scheduler = ownsScheduler ? defaultScheduler() : builder.scheduler;
         this.poll = new HostPoll();
-        this.monotonicClock = new HostMonotonicClock(scheduler, poll);
-        this.wallClock =
-                builder.clock == null
-                        ? new HostWallClock()
-                        : new HostWallClock(builder.clock, builder.clockResolution);
-        this.types = new HostTypes();
-        this.preopens = new HostPreopens(builder.directories, builder.readOnly, poll, files);
-        this.random = builder.random == null ? new HostRandom() : new HostRandom(builder.random);
-        this.insecure =
-                builder.insecureRandom == null
-                        ? new HostInsecure()
-                        : new HostInsecure(builder.insecureRandom);
-        this.insecureSeed =
-                builder.insecureSeed == null ? new HostInsecureSeed() : builder.insecureSeed;
+        this.sockets =
+                HostSocketsFactory.create(
+                        builder.networkPolicy, poll, builder.scheduler, builder.nameResolver);
+        this.ownsScheduler = builder.scheduler == null && sockets.eventLoopGroup() == null;
+        if (builder.scheduler != null) {
+            this.scheduler = builder.scheduler;
+        } else if (sockets.eventLoopGroup() != null) {
+            this.scheduler = sockets.eventLoopGroup();
+        } else {
+            this.scheduler = defaultScheduler();
+        }
+        try {
+            this.monotonicClock = new HostMonotonicClock(scheduler, poll);
+            this.wallClock =
+                    builder.clock == null
+                            ? new HostWallClock()
+                            : new HostWallClock(builder.clock, builder.clockResolution);
+            this.types = new HostTypes();
+            this.preopens = new HostPreopens(builder.directories, builder.readOnly, poll, files);
+            this.random =
+                    builder.random == null ? new HostRandom() : new HostRandom(builder.random);
+            this.insecure =
+                    builder.insecureRandom == null
+                            ? new HostInsecure()
+                            : new HostInsecure(builder.insecureRandom);
+            this.insecureSeed =
+                    builder.insecureSeed == null ? new HostInsecureSeed() : builder.insecureSeed;
+            this.instanceNetwork = new HostInstanceNetwork(builder.networkPolicy);
+        } catch (RuntimeException e) {
+            close();
+            throw e;
+        }
     }
 
     public static Builder builder() {
@@ -120,13 +144,34 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         return insecureSeed;
     }
 
+    @Override
+    public HostInstanceNetwork instanceNetwork() {
+        return instanceNetwork;
+    }
+
+    @Override
+    public run.endive.cm.wasi.p2.bindings.wasi.sockets.ipnamelookup.Host ipNameLookup() {
+        return sockets.ipNameLookup();
+    }
+
+    @Override
+    public run.endive.cm.wasi.p2.bindings.wasi.sockets.tcpcreatesocket.Host tcpCreateSocket() {
+        return sockets.tcpCreateSocket();
+    }
+
+    @Override
+    public run.endive.cm.wasi.p2.bindings.wasi.sockets.udpcreatesocket.Host udpCreateSocket() {
+        return sockets.udpCreateSocket();
+    }
+
     /**
-     * Closes every file a guest left open, and shuts down the scheduler unless the builder was
-     * given an external one to use.
+     * Closes every file a guest left open and what the network created, then shuts down the
+     * scheduler. Anything the builder was given stays open.
      */
     @Override
     public void close() {
         files.close();
+        sockets.close();
         if (ownsScheduler) {
             scheduler.shutdownNow();
         }
@@ -155,15 +200,19 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
         private Random random;
         private Random insecureRandom;
         private HostInsecureSeed insecureSeed;
+        private NetworkPolicy networkPolicy = NetworkPolicy.denyAll();
+        private NameResolver nameResolver;
 
         private Builder() {}
 
         /**
          * The executor that runs timers, such as those behind {@code wasi:clocks} subscriptions.
          * Any {@link ScheduledExecutorService} works, including an event loop the embedder already
-         * runs. A guest must never run on its threads, since a blocked guest would hold up the
-         * timers it waits for. By default, one is created and then shut down on {@link #close()}.
-         * When set by the embedder, it is their responsibility to shut it down.
+         * runs. When it is a Netty event loop group, the network runs on it as well. Otherwise a
+         * guest granted the network gets a one-thread NIO group of its own. A guest must never run
+         * on its threads, since a blocked guest would hold up the timers it waits for. By default,
+         * one is created and then shut down on {@link #close()}. When set by the embedder, it is
+         * their responsibility to shut it down.
          */
         public Builder withScheduler(ScheduledExecutorService scheduler) {
             this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -250,6 +299,31 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
          */
         public Builder withInsecureSeed(long first, long second) {
             this.insecureSeed = new HostInsecureSeed(first, second);
+            return this;
+        }
+
+        /**
+         * What the guest may do on the network through {@code wasi:sockets}. By default, it may do
+         * nothing. Granting it anything needs {@code io.netty:netty-transport} and {@code
+         * io.netty:netty-resolver-dns} from Netty 4.2 on the class path.
+         */
+        public Builder withNetworkPolicy(NetworkPolicy policy) {
+            this.networkPolicy = Objects.requireNonNull(policy, "policy");
+            return this;
+        }
+
+        /**
+         * What resolves the names the guest looks up, which the embedder closes. {@link
+         * NettyNameResolver#of} adapts a resolver from Netty.
+         *
+         * <p>By default, a Netty {@code DnsNameResolver} reads the host's resolver configuration
+         * and hosts file, and runs on the network's event loop group. On macOS, it also needs
+         * {@code io.netty:netty-resolver-dns-native-macos} to read the system's DNS servers, and
+         * warns once without it. With no configuration to read, it asks Google's public DNS
+         * servers.
+         */
+        public Builder withNameResolver(NameResolver resolver) {
+            this.nameResolver = Objects.requireNonNull(resolver, "resolver");
             return this;
         }
 

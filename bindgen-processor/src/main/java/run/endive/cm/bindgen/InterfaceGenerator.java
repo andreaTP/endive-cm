@@ -70,6 +70,9 @@ final class InterfaceGenerator {
 
     private final String generatedBy;
 
+    /** The qualified name of every exception generated so far, since interfaces may share one. */
+    private final Set<String> exceptions = new HashSet<>();
+
     InterfaceGenerator(String generatedBy) {
         this.generatedBy = generatedBy;
     }
@@ -118,12 +121,12 @@ final class InterfaceGenerator {
      * One exception per {@code result} the interface declares, since a result is encoded as
      * control flow rather than as a value.
      *
-     * <p>A result is written anonymously, so the scope is walked rather than the named types, and
-     * two results sharing an error payload share the exception named after it.
+     * <p>A result is written anonymously, so the scope is walked rather than the named types. Two
+     * results sharing an error payload share the exception named after it, generated once in the
+     * package of the interface declaring the payload, whichever interfaces use it.
      */
     private List<GeneratedUnit> exceptionSources(WitInterface iface) {
         List<GeneratedUnit> sources = new ArrayList<>();
-        Set<String> named = new HashSet<>();
         WitScope scope = iface.scope();
         for (int i = 0; i < scope.size(); i++) {
             run.endive.cm.types.Type declared = scope.at(i);
@@ -133,8 +136,11 @@ final class InterfaceGenerator {
                 continue;
             }
             String className = WitTypes.exceptionName(scope, i);
-            if (named.add(className)) {
-                sources.add(exceptionSource(iface, className, (ResultType) declared.defValType()));
+            WitScope home = WitTypes.exceptionScope(scope, i);
+            if (exceptions.add(home.javaPackage() + "." + className)) {
+                sources.add(
+                        exceptionSource(
+                                iface, i, home, className, (ResultType) declared.defValType()));
             }
         }
         return sources;
@@ -143,15 +149,23 @@ final class InterfaceGenerator {
     /**
      * The error case of a {@code result}, as an unchecked exception carrying the error payload so
      * that a bound signature stays free of {@code throws}.
+     *
+     * @param index where the result sits in the interface's scope
+     * @param home the space whose package the exception is generated into
      */
-    private GeneratedUnit exceptionSource(WitInterface iface, String className, ResultType result) {
-        GeneratedUnit unit = unitFor(iface);
+    private GeneratedUnit exceptionSource(
+            WitInterface iface, int index, WitScope home, String className, ResultType result) {
+        GeneratedUnit unit = new GeneratedUnit(home.javaPackage(), generatedBy);
         WitTypes types = new WitTypes(unit);
 
         ClassOrInterfaceDeclaration type = unit.addClass(className);
         type.addExtendedType("RuntimeException");
         type.setJavadocComment(
-                "The error case of a WIT result declared by {@code " + iface.name() + "}.");
+                home == iface.scope()
+                        ? "The error case of a WIT result declared by {@code " + iface.name() + "}."
+                        : "The error case of a WIT result carrying {@code "
+                                + WitTypes.errorName(iface.scope(), index)
+                                + "}.");
         type.addFieldWithInitializer(
                 PrimitiveType.longType(),
                 "serialVersionUID",

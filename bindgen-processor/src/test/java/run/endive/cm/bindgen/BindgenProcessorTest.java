@@ -485,6 +485,53 @@ class BindgenProcessorTest {
         assertThat(compilation).hadErrorContaining("uses result type \"outcome\" from \"types\"");
     }
 
+    /**
+     * Interfaces whose results carry the same used error payload throw one exception, generated
+     * beside the payload, as {@code wasi:sockets} needs for {@code error-code}.
+     */
+    @Test
+    void aUsedErrorPayloadSharesOneException() {
+        Compilation compilation =
+                compile(
+                        JavaFileObjects.forSourceString(
+                                "endive.testing.UsedErrorHost",
+                                "package endive.testing;\n"
+                                        + "import run.endive.cm.runtime.Bindgen;\n"
+                                        + "@Bindgen(world = \"used-error\", inline ="
+                                        + " \"package example:used;\\n"
+                                        + "interface network {\\n"
+                                        + "  enum error-code { refused, timeout }\\n"
+                                        + "}\\n"
+                                        + "interface tcp {\\n"
+                                        + "  use network.{error-code};\\n"
+                                        + "  connect: func() -> result<u32, error-code>;\\n"
+                                        + "}\\n"
+                                        + "interface udp {\\n"
+                                        + "  use network.{error-code as failure};\\n"
+                                        + "  send: func() -> result<_, failure>;\\n"
+                                        + "}\\n"
+                                        + "world used-error {\\n"
+                                        + "  import tcp;\\n"
+                                        + "  import udp;\\n"
+                                        + "  export go: func();\\n"
+                                        + "}\\n\")\n"
+                                        + "public class UsedErrorHost {}\n"));
+
+        assertThat(compilation).succeededWithoutWarnings();
+        assertGenerated(
+                compilation,
+                List.of(
+                        "endive.testing.UsedErrorWorld",
+                        "endive.testing.example.used.network.ErrorCode",
+                        "endive.testing.example.used.network.ErrorCodeException",
+                        "endive.testing.example.used.tcp.Host",
+                        "endive.testing.example.used.udp.Host"));
+        assertThat(compilation)
+                .generatedSourceFile("endive.testing.UsedErrorWorld")
+                .contentsAsUtf8String()
+                .doesNotContain("used.tcp.ErrorCodeException");
+    }
+
     /** Only the host side of a used type is generated so far. */
     @Test
     void anExportedInterfaceUsingTypesIsRefused() {
