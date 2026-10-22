@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
@@ -153,6 +154,58 @@ class HostStdinTest {
         assertClosed(() -> stream.read(len(1)));
     }
 
+    /** One thread reads a stream for every host, and what it reads after one closes goes on. */
+    @Test
+    void aReadReturningAfterItsHostClosesGoesToTheNextHost() {
+        Feed feed = new Feed();
+        Set<Thread> before = readers();
+        try {
+            HostStdin first = new HostStdin(poll, feed);
+            first.getStdin();
+            feed.awaitBlockedRead();
+            first.close();
+
+            try (HostStdin second = new HostStdin(poll, feed)) {
+                InputStream stream = second.getStdin();
+                Set<Thread> started = readers();
+                started.removeAll(before);
+                assertEquals(1, started.size());
+
+                feed.send("hello");
+                assertArrayEquals(
+                        bytes("hello"),
+                        assertTimeoutPreemptively(
+                                Duration.ofSeconds(10), () -> stream.blockingRead(len(10))));
+            }
+        } finally {
+            feed.end();
+        }
+    }
+
+    /** A terminal ends a stream once, so an end read after its host closes ends the next one. */
+    @Test
+    void anEndReadAfterItsHostClosesEndsTheNextHostsStdin() throws InterruptedException {
+        Feed feed = new Feed();
+        Set<Thread> before = readers();
+        HostStdin first = new HostStdin(poll, feed);
+        first.getStdin();
+        feed.awaitBlockedRead();
+        Set<Thread> started = readers();
+        started.removeAll(before);
+        first.close();
+        feed.endOnce();
+        started.iterator().next().join(Duration.ofSeconds(10).toMillis());
+
+        try (HostStdin second = new HostStdin(poll, feed)) {
+            InputStream stream = second.getStdin();
+
+            assertTimeoutPreemptively(
+                    Duration.ofSeconds(10), () -> assertClosed(() -> stream.blockingRead(len(1))));
+        } finally {
+            feed.end();
+        }
+    }
+
     private static Set<Thread> readers() {
         return Thread.getAllStackTraces().keySet().stream()
                 .filter(thread -> READER.equals(thread.getName()))
@@ -215,7 +268,10 @@ class HostStdinTest {
     /** A Java stream serving what a test sends one piece per read, blocking until one arrives. */
     private static final class Feed extends java.io.InputStream {
 
+        private static final byte[] END_ONCE = new byte[0];
+
         private final BlockingQueue<byte[]> pieces = new LinkedBlockingQueue<>();
+        private final AtomicInteger blockedReads = new AtomicInteger();
         private volatile boolean closed;
 
         void send(String text) {
@@ -227,6 +283,21 @@ class HostStdinTest {
             pieces.add(new byte[0]);
         }
 
+        /** Makes the next read find the end of the stream, as a terminal does once. */
+        void endOnce() {
+            pieces.add(END_ONCE);
+        }
+
+        void awaitBlockedRead() {
+            assertTimeoutPreemptively(
+                    Duration.ofSeconds(10),
+                    () -> {
+                        while (blockedReads.get() == 0) {
+                            Thread.sleep(1);
+                        }
+                    });
+        }
+
         @Override
         public int read() throws IOException {
             byte[] one = new byte[1];
@@ -236,7 +307,16 @@ class HostStdinTest {
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
             try {
-                byte[] piece = pieces.take();
+                byte[] piece;
+                blockedReads.incrementAndGet();
+                try {
+                    piece = pieces.take();
+                } finally {
+                    blockedReads.decrementAndGet();
+                }
+                if (piece == END_ONCE) {
+                    return -1;
+                }
                 if (piece.length == 0) {
                     pieces.add(piece);
                     return -1;

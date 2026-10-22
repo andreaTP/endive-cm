@@ -1,9 +1,6 @@
 package run.endive.cm.wasi.p2.cli.stdin;
 
-import java.io.IOException;
 import java.io.InputStream;
-import java.util.Arrays;
-import java.util.concurrent.Semaphore;
 import run.endive.cm.wasi.p2.bindings.wasi.cli.stdin.Host;
 import run.endive.cm.wasi.p2.io.poll.HostPoll;
 import run.endive.cm.wasi.p2.io.streams.BufferedHostInputStream;
@@ -19,6 +16,11 @@ import run.endive.cm.wasi.p2.io.streams.HostInputStream;
  * given reads the same bytes, so dropping one leaves the others usable. The Java stream is never
  * closed.
  *
+ * <p>Hosts given the same Java stream share that thread, and the one that asked for stdin most
+ * recently gets what it reads. A read cannot be interrupted, so what one returns after its host
+ * closes goes to the next host given the stream. Bytes a guest left unread are dropped with its
+ * host, as buffered stdio drops what it read ahead.
+ *
  * @see <a href="https://github.com/WebAssembly/WASI/blob/v0.2.12/proposals/cli/wit/stdio.wit">wasi:cli/stdin</a>
  */
 public final class HostStdin implements Host, AutoCloseable {
@@ -31,8 +33,8 @@ public final class HostStdin implements Host, AutoCloseable {
 
     private final HostPoll poll;
     private final InputStream source;
-    private final Semaphore demand = new Semaphore(0);
     private BufferedHostInputStream buffer;
+    private StdinReader reader;
 
     /**
      * @param source the Java stream to read, or {@code null} for a stdin that is empty and already
@@ -49,48 +51,32 @@ public final class HostStdin implements Host, AutoCloseable {
     }
 
     /**
-     * Closes stdin for the guest and stops reading the Java stream. A thread blocked reading it
-     * stops once that read returns.
+     * Closes stdin for the guest and stops reading the Java stream for it. A thread blocked reading
+     * it stops once that read returns, keeping what it read for the next host given the stream.
      */
     @Override
     public synchronized void close() {
         if (buffer == null) {
             buffer = new BufferedHostInputStream(poll);
         }
+        if (reader != null) {
+            reader.detach(buffer);
+        }
         buffer.close();
-        demand.release();
     }
 
-    /** The buffer every handle reads, whose reading thread starts the first time it is needed. */
+    /** The buffer every handle reads, which the stream's reader fills from the first time. */
     private synchronized BufferedHostInputStream buffer() {
         if (buffer == null) {
-            buffer = new BufferedHostInputStream(poll, CAPACITY, demand::release);
             if (source == null) {
+                buffer = new BufferedHostInputStream(poll);
                 buffer.close();
             } else {
-                BufferedHostInputStream target = buffer;
-                Thread reader = new Thread(() -> pump(target), "endive-wasi-p2-stdin");
-                reader.setDaemon(true);
-                reader.start();
+                reader = StdinReader.of(source);
+                buffer = new BufferedHostInputStream(poll, CAPACITY, reader::demand);
+                reader.attach(buffer);
             }
         }
         return buffer;
-    }
-
-    /** Moves the Java stream into {@code target} until either of them ends. */
-    private void pump(BufferedHostInputStream target) {
-        byte[] chunk = new byte[CHUNK_SIZE];
-        try {
-            while (!target.isClosed()) {
-                int read = source.read(chunk);
-                if (read < 0) {
-                    target.close();
-                } else if (!target.offer(Arrays.copyOf(chunk, read)) && !target.isClosed()) {
-                    demand.acquireUninterruptibly();
-                }
-            }
-        } catch (IOException | RuntimeException e) {
-            target.fail(e);
-        }
     }
 }

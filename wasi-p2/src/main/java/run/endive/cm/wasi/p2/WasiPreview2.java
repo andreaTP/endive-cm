@@ -439,7 +439,8 @@ public final class WasiPreview2 implements ImportsWorld.Imports, AutoCloseable {
 
         /**
          * The stream the guest reads as stdin. A thread reads it once the guest asks for stdin, and
-         * it is never closed.
+         * it is never closed. Hosts given the same stream share that thread, as {@link HostStdin}
+         * describes.
          *
          * @param tty whether the stream is a terminal, as {@code wasi:cli/terminal-stdin} reports
          */
